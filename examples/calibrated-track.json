@@ -1,0 +1,16 @@
+{
+  "coordinate_system": "GCJ-02",
+  "center": [35.976469411041336, 120.20660072565079],
+  "straight_m": 82.06241267738218,
+  "radius_m": 44.41024686070095,
+  "bearing_deg": 0.0,
+  "track_width_m": 8.0,
+  "calibration": {
+    "method": "Manual fit to the red running strip in the AMap satellite layer; not a survey",
+    "tile": {"x": 218603, "y": 102961, "z": 18},
+    "tile_local_center_px": [198.5, 98.0],
+    "tile_local_radius_px": 92.0,
+    "tile_local_straight_px": 170.0,
+    "note": "The previous illustrative 31 m radius, 90 m straight and -12 degree axis did not describe this stadium. This fixture is only for this public example; never translate other saved templates globally."
+  }
+}

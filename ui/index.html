@@ -1,0 +1,1094 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="description" content="Chill desktop route workbench">
+  <meta name="piggy-token" content="__PIGGY_SESSION_TOKEN__">
+  <title>Chill</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/assets/chill-32.png?v=3">
+  <link rel="apple-touch-icon" href="/assets/chill-180.png?v=3">
+  <link rel="stylesheet" href="/vendor/leaflet.css">
+  <script src="/vendor/leaflet.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "PingFang SC", sans-serif;
+      --ground: #181818; --glass: rgba(24,24,24,.84); --well: rgba(255,255,255,.065);
+      --text: #f7f7f7; --muted: #b8b8bc; --faint: #a0a0a6; --border: rgba(255,255,255,.18);
+      --rule: rgba(255,255,255,.10); --control: rgba(255,255,255,.14); --blue: #6ab9ff;
+      --gold: #e9c46e; --green: #81d7aa; --red: #ffa29a; --radius: 20px;
+      --ease: cubic-bezier(.32,.72,0,1); --gap: 24px;
+    }
+    * { box-sizing: border-box; }
+    html,body { width:100%; height:100%; margin:0; overflow:hidden; }
+    body { font-family:var(--font); background:var(--ground); color:var(--text); font-size:14px; line-height:20px; font-variant-numeric:tabular-nums; -webkit-font-smoothing:antialiased; }
+    button,input,select { font:inherit; color:inherit; }
+    button { cursor:pointer; border:0; background:none; user-select:none; -webkit-tap-highlight-color:transparent; }
+    button,input,select { outline:none; }
+    button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible { outline:2px solid var(--blue); outline-offset:3px; }
+    button { transition:background .25s var(--ease),color .25s var(--ease),transform .25s var(--ease); }
+    button:hover:not(:disabled) { background:var(--control); }
+    button:active:not(:disabled) { transform:scale(.98); }
+    button:disabled { cursor:not-allowed; color:var(--faint); }
+    button.primary:disabled { background:rgba(255,255,255,.14); color:#aaa; }
+    input[type="checkbox"] { accent-color:var(--blue); width:18px; height:18px; flex:none; margin:2px 0 0; cursor:pointer; }
+    h1,h2,h3,p { margin:0; }
+    h1 { font-size:24px; line-height:32px; font-weight:600; letter-spacing:-.8px; }
+    h2 { font-size:16px; line-height:24px; font-weight:600; }
+    h3 { font-size:14px; line-height:20px; font-weight:600; }
+    p { text-wrap:pretty; }
+    .num,output,input[type="number"],.coordinate,.vertex-coord { font-variant-numeric:tabular-nums; }
+    .muted { color:var(--muted); } .small { font-size:12px; line-height:16px; }
+    .icon { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.65; stroke-linecap:round; stroke-linejoin:round; flex:none; }
+    .icon.small-icon { width:16px; height:16px; }
+    .glass { background:var(--glass); border:1px solid var(--border); border-radius:var(--radius); backdrop-filter:blur(28px) saturate(190%); -webkit-backdrop-filter:blur(28px) saturate(190%); box-shadow:0 16px 48px rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.04); }
+    .icon-button { display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; border-radius:50%; color:var(--muted); flex:none; }
+    .text-button { min-height:36px; padding:8px 12px; border-radius:8px; font-weight:500; }
+    .primary { background:#f2f2f5; color:#181818; font-weight:600; }
+    button.primary:hover:not(:disabled) { background:#fff; }
+    .outline { background:var(--well); border:1px solid var(--control); }
+    .full { width:100%; }
+    .hidden,[hidden] { display:none!important; }
+    .row { display:flex; align-items:center; gap:8px; }
+    .between { justify-content:space-between; }
+    #map { position:fixed; inset:0; z-index:0; background:#272727; }
+    #fallback-map { width:100%; height:100%; display:block; touch-action:none; }
+    .map-shade { position:fixed; inset:0; background:rgba(0,0,0,.08); z-index:1; pointer-events:none; }
+    /* Desktop: 24 + 300 + 24 + free map + 24 + 300 + 24 = viewport width. */
+    .topbar { position:fixed; z-index:500; top:24px; left:24px; right:24px; height:56px; display:grid; grid-template-columns:300px minmax(240px,520px) 1fr; gap:24px; align-items:start; pointer-events:none; }
+    .topbar>* { pointer-events:auto; }
+    .brand { display:flex; align-items:center; gap:12px; padding:12px 16px; width:fit-content; height:56px; }
+    .brand-symbol { width:32px; height:32px; object-fit:cover; border-radius:8px; }
+    .brand .brand-context { color:var(--muted); font-size:12px; line-height:16px; margin-left:8px; padding-left:16px; border-left:1px solid var(--rule); }
+    .search { position:relative; }
+    .search-field { display:flex; align-items:center; gap:12px; padding:0 16px; height:56px; }
+    .search-field input { background:none; border:0; width:100%; min-width:0; height:48px; color:var(--text); }
+    input::placeholder { color:var(--muted); opacity:1; }
+    .shortcut { padding:2px 4px; border:1px solid var(--control); border-radius:4px; font-size:12px; color:var(--faint); flex:none; white-space:nowrap; }
+    .search-results { position:absolute; top:64px; left:0; right:0; padding:8px; max-height:400px; overflow:auto; }
+    .search-result { width:100%; text-align:left; padding:12px; border-radius:12px; display:flex; gap:12px; align-items:center; }
+    .search-result .result-name { flex:1; min-width:0; }
+    .search-result .source { font-size:12px; color:var(--muted); white-space:nowrap; }
+    .search-empty { padding:16px; color:var(--muted); }
+    .top-tools { display:flex; justify-content:flex-end; align-items:center; gap:12px; height:56px; }
+    .language-switch { display:flex; gap:4px; padding:4px; border-radius:999px; height:40px; }
+    .language-switch button { padding:4px 12px; border-radius:999px; color:var(--muted); font-size:14px; }
+    .language-switch button[aria-pressed="true"] { background:rgba(255,255,255,.16); color:#fff; }
+    .top-tools>.icon-button { width:40px; height:40px; }
+    .tutorial-launch { display:inline-flex; align-items:center; gap:8px; height:40px; padding:8px 16px; border-radius:999px; white-space:nowrap; font-weight:500; }
+    .search { min-width:0; }
+    .editor { position:fixed; top:104px; left:24px; z-index:450; width:300px; max-height:calc(100dvh - 208px); display:flex; flex-direction:column; overflow:hidden; }
+    .panel-heading { padding:24px 24px 16px; }
+    .panel-heading p { margin-top:4px; }
+    .segmented { display:flex; background:var(--well); border:1px solid var(--rule); padding:4px; border-radius:12px; margin:0 16px; }
+    .segmented button { flex:1; min-height:36px; padding:8px 4px; border-radius:8px; font-weight:500; color:var(--muted); white-space:nowrap; }
+    .segmented button[aria-selected="true"] { background:rgba(255,255,255,.14); color:var(--text); box-shadow:0 1px 4px rgba(0,0,0,.1); }
+    .editor-body { padding:16px 24px 24px; overflow:auto; }
+    .editor-instruction { font-size:12px; line-height:20px; color:var(--muted); min-height:40px; }
+    .editor-meta { display:flex; justify-content:space-between; align-items:center; padding:16px 0 12px; }
+    .dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--faint); flex:none; }
+    .dot.blue { background:var(--blue); } .dot.green { background:var(--green); } .dot.gold { background:var(--gold); }
+    .status-label { display:inline-flex; align-items:center; gap:8px; font-size:12px; line-height:16px; }
+    .vertex-list { display:flex; flex-direction:column; gap:4px; max-height:196px; overflow:auto; margin:0 -8px; padding:0 8px; scrollbar-width:thin; }
+    .vertex-row { display:flex; gap:8px; align-items:center; padding:8px; border:1px solid transparent; border-radius:8px; min-height:44px; cursor:pointer; }
+    .vertex-row:hover { border-color:var(--control); }
+    .vertex-row.selected { background:var(--well); border-color:var(--control); }
+    .vertex-index { width:24px; color:var(--blue); font-variant-numeric:tabular-nums; flex:none; text-align:center; }
+    .vertex-row.target .vertex-index { color:var(--green); font-size:18px; }
+    .vertex-coord { flex:1; min-width:0; color:var(--muted); font-size:12px; white-space:nowrap; }
+    .vertex-row .icon-button { width:24px; height:24px; }
+    .vertex-empty { padding:24px 4px; text-align:center; color:var(--muted); font-size:12px; line-height:20px; border:1px dashed var(--control); border-radius:12px; }
+    .vertex-empty .icon { width:32px; height:32px; margin-bottom:8px; color:var(--faint); }
+    .edit-actions { display:flex; gap:8px; padding-top:12px; }
+    .edit-actions button { flex:1; color:var(--muted); font-size:12px; }
+    .edit-actions .icon { width:16px; height:16px; }
+    .save-track { margin-top:16px; border-radius:12px; min-height:40px; font-size:14px; }
+    .track-width-row { display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px; }
+    .track-width-row input[type="number"] { flex:none;width:76px;min-height:40px;text-align:right; }
+    .target-toggle { margin-top:12px; padding:12px; display:flex; align-items:flex-start; gap:12px; border-radius:8px; background:var(--well); font-size:12px; line-height:20px; }
+    .draft-notice { color:var(--gold); font-size:12px; line-height:20px; margin-top:12px; }
+    .activate { margin-top:16px; min-height:44px; border-radius:12px; font-size:14px; }
+    .editor-lock { color:var(--gold); padding:12px; background:var(--well); border-radius:8px; font-size:12px; line-height:20px; margin-top:12px; }
+    .bottom-left { position:fixed; left:24px; bottom:24px; z-index:450; max-width:calc(100vw - 372px); }
+    .map-legend { padding:12px 16px; display:flex; gap:16px; align-items:center; width:fit-content; font-size:12px; color:var(--muted); }
+    .legend-swatch { width:20px; border-top:2px solid var(--blue); display:inline-block; }
+    .legend-swatch.draft { border-color:var(--gold); border-top-style:dashed; }
+    .legend-swatch.target { width:12px; height:12px; border:1px solid var(--green); border-radius:50%; background:rgba(129,215,170,.14); }
+    .legend-item { display:flex; align-items:center; gap:8px; white-space:nowrap; }
+    .session { position:fixed; top:104px; right:24px; z-index:450; width:300px; max-height:calc(100dvh - 128px); overflow:auto; scrollbar-width:thin; }
+    .session-top { padding:16px 24px 12px; }
+    .device-badge { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; line-height:16px; }
+    .device-badge.connected { color:var(--green); }
+    .session-title { display:flex; align-items:center; justify-content:space-between; margin-top:8px; }
+    .state-caption { font-size:12px; line-height:16px; color:var(--muted); margin-top:4px; }
+    .metrics { padding:0 24px 12px; }
+    .distance-line { display:flex; align-items:baseline; gap:8px; padding-top:4px; }
+    .distance-value { font-size:36px; line-height:40px; font-weight:500; letter-spacing:-1.1px; }
+    .unit { color:var(--muted); font-size:12px; line-height:16px; font-weight:400; letter-spacing:0; }
+    .distance-target { margin-left:auto; text-align:right; color:var(--muted); font-size:12px; line-height:16px; }
+    .progress { height:4px; border-radius:4px; background:var(--control); overflow:hidden; margin:12px 0 8px; }
+    .progress-fill { width:0; height:100%; background:var(--blue); border-radius:inherit; transition:width .7s var(--ease); }
+    .progress.achieved .progress-fill { background:var(--green); }
+    .goal-caption { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; line-height:16px; min-height:16px; }
+    .goal-caption.achieved { color:var(--green); }
+    .goal-caption.achieved .dot { background:var(--green); animation:breathe 2s var(--ease) infinite; }
+    @keyframes breathe { 0%,100% { opacity:.4; } 50% { opacity:1; } }
+    .metric-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px 24px; margin-top:12px; }
+    .metric-grid label { display:block; color:var(--muted); font-size:12px; line-height:16px; }
+    .metric-value { font-size:20px; line-height:28px; font-weight:500; letter-spacing:-.3px; }
+    .lap-summary { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:12px; padding:8px 12px; border-radius:12px; background:var(--well); }
+    .lap-summary label { display:block; font-size:12px; line-height:16px; color:var(--muted); }
+    .lap-summary>div:first-child { flex:none; }
+    .lap-previous { text-align:right; font-size:12px; line-height:20px; color:var(--muted); }
+    #current-lap { white-space:nowrap; }
+    .settings { display:grid; grid-template-columns:minmax(0,1fr) 80px; gap:12px; padding:12px 24px; background:var(--well); border-top:1px solid var(--rule); border-bottom:1px solid var(--rule); }
+    .session-options,.rest-panel { padding:12px 24px; }
+    .session-options label { display:flex; align-items:center; gap:8px; font-size:14px; line-height:20px; }
+    .session-options input { width:16px; height:16px; flex:none; }
+    .session-options p,.rest-panel p { margin-top:8px; font-size:12px; line-height:20px; color:var(--muted); }
+    .rest-panel button { width:100%; min-height:44px; border-radius:12px; }
+    #hold-position { margin-top:8px; color:var(--gold); }
+    .settings label { display:block; font-size:12px; line-height:16px; color:var(--muted); margin-bottom:8px; }
+    select,input[type="number"] { height:36px; padding:8px; background:#272727; border:1px solid var(--control); border-radius:8px; width:100%; font-size:12px; }
+    select:disabled,input:disabled { color:var(--muted); opacity:1; }
+    .steps { padding:12px 16px; display:flex; flex-direction:column; gap:8px; }
+    .step { width:100%; display:flex; align-items:center; gap:12px; padding:8px 12px; min-height:56px; border:1px solid var(--control); background:var(--well); border-radius:12px; text-align:left; }
+    .step-index { width:24px; height:24px; display:flex; align-items:center; justify-content:center; border-radius:50%; border:1px solid currentColor; font-size:12px; font-variant-numeric:tabular-nums; flex:none; }
+    .step-label { flex:1; min-width:0; font-size:14px; font-weight:600; line-height:20px; }
+    .step-subtitle { display:block; font-size:12px; line-height:16px; color:var(--muted); font-weight:400; margin-top:2px; }
+    .step.primary { border-color:transparent; background:#f2f2f5; color:#181818; }
+    .step.primary .step-subtitle { color:#5c5c60; }
+    .step.primary:disabled .step-subtitle { color:var(--muted); }
+    .step .icon { width:16px; height:16px; }
+    .session-note { font-size:12px; line-height:20px; color:var(--muted); padding:0 24px 12px; }
+    .coordinates { padding:8px 24px 12px; border-top:1px solid var(--rule); font-size:12px; line-height:20px; }
+    .coordinate-row { display:flex; justify-content:space-between; gap:8px; color:var(--muted); }
+    .coordinate { text-align:right; color:var(--text); font-size:12px; }
+    .map-controls { position:fixed; z-index:450; right:348px; bottom:24px; display:flex; flex-direction:column; gap:12px; align-items:flex-end; }
+    .control-cluster { padding:4px; display:flex; flex-direction:column; border-radius:999px; }
+    .layer-switch { display:flex; gap:4px; padding:4px; border-radius:999px; }
+    .layer-switch button { min-height:36px; padding:8px 12px; border-radius:999px; font-size:12px; color:var(--muted); }
+    .layer-switch button[aria-pressed="true"] { background:var(--control); color:var(--text); }
+    .map-notice { position:fixed; z-index:440; top:104px; left:348px; right:348px; padding:12px 16px; display:flex; gap:12px; align-items:center; font-size:12px; line-height:20px; color:var(--muted); }
+    .map-notice p { flex:1; }
+    .toast-stack { position:fixed; z-index:2100; top:96px; left:50%; transform:translateX(-50%); display:flex; flex-direction:column; gap:8px; width:min(480px,calc(100vw - 32px)); pointer-events:none; }
+    .toast { padding:12px 16px; font-size:14px; line-height:20px; text-align:center; }
+    .toast.error { color:var(--red); }
+    .dialog-error,.session-error { color:var(--red) !important; font-size:14px; line-height:20px; margin-top:16px; }
+    .session-error { padding:0 24px; white-space:pre-line; overflow-wrap:anywhere; }
+    .dialog-backdrop { position:fixed; z-index:2000; inset:0; background:rgba(0,0,0,.48); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); display:flex; align-items:center; justify-content:center; padding:24px; }
+    .dialog { width:min(600px,100%); max-height:calc(100dvh - 48px); overflow:auto; padding:32px; box-shadow:0 24px 96px rgba(0,0,0,.3); }
+    .dialog h2 { font-size:24px; line-height:32px; letter-spacing:-.5px; margin-top:12px; }
+    .dialog>p { color:var(--muted); margin-top:12px; line-height:24px; }
+    .dialog-symbol { width:40px; height:40px; color:var(--blue); }
+    .dialog-symbol.warning { color:var(--gold); }
+    .checks { display:flex; flex-direction:column; gap:12px; margin:24px 0; }
+    .check { display:flex; gap:12px; align-items:flex-start; line-height:24px; cursor:pointer; }
+    .check .icon { margin-top:2px; color:var(--muted); }
+    .check span { flex:1; }
+    .check input { margin-top:4px; }
+    .check.weather-check { padding:12px; border:1px solid rgba(233,196,110,.36); border-radius:12px; background:rgba(233,196,110,.08); color:var(--gold); }
+    .settlement-order { padding:16px; border:1px solid rgba(233,196,110,.36); border-radius:12px; background:rgba(233,196,110,.08); color:var(--gold); line-height:24px; margin-top:16px; }
+    /* One overlay, several independent cutouts: distant controls stay focused
+       without exposing every unrelated action between them. */
+    .tutorial { position:fixed; inset:0; z-index:1800; pointer-events:none; }
+    .tutorial-shade { position:absolute; inset:0; width:100%; height:100%; overflow:visible; }
+    .tutorial-hole,.tutorial-ring { transition:x .45s var(--ease),y .45s var(--ease),width .45s var(--ease),height .45s var(--ease); }
+    .tutorial-ring { fill:none; stroke:rgba(255,255,255,.82); stroke-width:1.5; }
+    .tutorial-card { position:absolute; width:min(440px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); padding:24px; pointer-events:auto; display:flex; flex-direction:column; transition:left .45s var(--ease),top .45s var(--ease); box-shadow:0 24px 96px rgba(0,0,0,.36); }
+    .tutorial-card:focus { outline:none; }
+    .tutorial-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; flex:none; }
+    .tutorial-count { font-size:12px; line-height:16px; color:var(--muted); }
+    .tutorial-dismiss { color:var(--muted); font-size:12px; line-height:16px; padding:8px; border-radius:8px; }
+    .tutorial-content { overflow:auto; overscroll-behavior:contain; margin-top:16px; min-height:0; }
+    .tutorial-content h2 { font-size:20px; line-height:28px; font-weight:600; letter-spacing:-.3px; text-wrap:balance; }
+    .tutorial-body { margin-top:12px; font-size:14px; line-height:24px; color:var(--muted); }
+    .tutorial-body p+p { margin-top:12px; }
+    .tutorial-body p:last-child { color:var(--text); }
+    .tutorial-body .tutorial-golden { color:var(--text); font-weight:600; }
+    .tutorial-hint { font-size:12px; line-height:20px; color:var(--muted); margin-top:16px; }
+    .tutorial-footer { margin-top:24px; display:flex; align-items:center; gap:16px; flex:none; }
+    .tutorial-dots { display:flex; align-items:center; gap:4px; margin-right:auto; }
+    .tutorial-dots span { width:4px; height:4px; border-radius:50%; background:var(--control); }
+    .tutorial-dots span.current { width:16px; border-radius:4px; background:var(--text); }
+    .tutorial-footer button { min-height:44px; padding:8px 16px; border-radius:12px; white-space:nowrap; }
+    .dialog-actions { display:flex; gap:12px; margin-top:24px; }
+    .dialog-actions button { min-height:44px; border-radius:12px; padding:12px 16px; flex:1; font-size:14px; }
+    .dialog-notice { padding:12px; background:var(--well); border-radius:8px; font-size:12px; line-height:20px; color:var(--muted); margin-top:16px; }
+    .clock-row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .clock-status { color:var(--muted); font-size:12px; line-height:20px; }
+    .clock-status.synced { color:var(--green); }
+    .clock-status.skew,.clock-status.offline { color:var(--gold); }
+    .help-grid { display:grid; gap:16px; margin-top:24px; }
+    .help-grid p { color:var(--muted); margin-top:4px; line-height:24px; }
+    .live-dot { width:14px; height:14px; border:3px solid white; border-radius:50%; background:#278fff; box-shadow:0 0 0 8px rgba(39,143,255,.18),0 2px 8px rgba(0,0,0,.3); }
+    .anchor { width:16px; height:16px; border-radius:50%; background:#fff; border:3px solid #3499ff; box-shadow:0 1px 4px rgba(0,0,0,.4); }
+    .anchor.draft { border-color:var(--gold); }
+    .anchor.target { width:28px; height:28px; background:#2c5c46; border:2px solid var(--green); color:#eafff1; display:flex; align-items:center; justify-content:center; font-size:18px; line-height:24px; }
+    .route-arrow { color:#e9f6ff; font-size:24px; line-height:24px; text-shadow:0 1px 4px #1d3755; transform-origin:center; }
+    .leaflet-container { font:inherit; }
+    .leaflet-control-attribution { background:rgba(24,24,24,.8)!important; color:#c8c8cc!important; border-radius:4px 0 0 0; font-size:12px!important; }
+    .leaflet-control-attribution a { color:#c8c8cc!important; }
+    .leaflet-div-icon { background:none; border:0; }
+    .leaflet-tooltip { color:var(--text); font:12px/16px var(--font); background:#272727; border:1px solid var(--border); border-radius:8px; padding:8px; box-shadow:none; }
+    .leaflet-tooltip:before { display:none; }
+    .skip { position:fixed; top:-64px; left:24px; z-index:3000; background:#fff; color:#181818; padding:12px; border-radius:8px; }
+    .skip:focus { top:16px; }
+    ::-webkit-scrollbar { width:4px; height:4px; } ::-webkit-scrollbar-thumb { background:var(--control); border-radius:4px; }
+    @media (min-width:1101px) {
+      .session { width:320px; }
+      .session-top { padding:16px 24px 8px; }
+      .session-title { margin-top:4px; }
+      .metrics { padding-bottom:8px; }
+      .progress { margin:8px 0; }
+      .metric-grid { margin-top:8px; gap:8px 24px; }
+      .settings { padding:8px 24px; }
+      .settings label { margin-bottom:4px; }
+      .step-subtitle { font-size:12px; line-height:16px; }
+      .steps { padding:12px; }
+      .session-note { padding-bottom:8px; }
+      .map-controls { right:368px; }
+      .map-notice { right:368px; }
+    }
+    @media (max-width:1100px) {
+      .topbar { grid-template-columns:240px minmax(240px,1fr) auto; gap:16px; }
+      .brand .brand-context { display:none; }
+      .editor { width:264px; }
+      .session { width:280px; }
+      .map-controls { right:328px; }
+      .map-notice { left:312px; right:328px; }
+      .panel-heading { padding:16px; }
+      .editor-body { padding:16px; }
+      .map-legend { gap:12px; }
+      .legend-item:last-child { display:none; }
+    }
+    @media (max-width:800px) {
+      .topbar { top:16px; left:16px; right:16px; grid-template-columns:auto minmax(0,1fr) auto; gap:12px; }
+      .brand { padding:8px 12px; }
+      .brand-symbol { width:24px; height:24px; }
+      .brand h1 { font-size:20px; }
+      .search-field { padding:0 12px; }
+      .shortcut { display:none; }
+      .top-tools { gap:8px; }
+      .top-tools>.icon-button { display:none; }
+      .language-switch button { padding:4px 8px; }
+      .tutorial-launch { padding:8px 12px; }
+      .editor { left:16px; top:96px; width:240px; max-height:calc(100dvh - 200px); }
+      .session { right:16px; top:96px; width:264px; max-height:calc(100dvh - 120px); }
+      .session-top,.metrics { padding-left:16px; padding-right:16px; }
+      .settings { padding:16px; }
+      .coordinates { padding-left:16px; padding-right:16px; }
+      .map-notice { top:auto; bottom:80px; left:16px; right:296px; }
+      .map-controls { right:296px; bottom:16px; }
+      .layer-switch button { padding:8px; }
+      .bottom-left { left:16px; bottom:16px; max-width:calc(100vw - 312px); }
+      .map-legend { padding:12px; }
+      .legend-item:not(:first-child) { display:none; }
+    }
+    @media (min-width:581px) and (max-width:980px) {
+      html,body { overflow:auto; height:auto; min-height:100%; }
+      #app { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; padding:calc(60dvh + 16px) 16px 24px; }
+      #map { position:absolute; height:60dvh; }
+      .map-shade { position:absolute; height:60dvh; }
+      .editor,.session { position:relative; inset:auto; width:100%; max-height:none; align-self:start; }
+      .map-controls { position:absolute; right:16px; top:calc(60dvh - 160px); bottom:auto; }
+      .bottom-left { position:absolute; left:16px; top:calc(60dvh - 56px); bottom:auto; max-width:calc(100vw - 320px); }
+      .map-notice { position:absolute; top:96px; left:16px; right:16px; bottom:auto; }
+    }
+    @media (max-width:580px) {
+      html,body { overflow:auto; min-height:100%; height:auto; }
+      #app { min-height:100dvh; padding:calc(52dvh + 24px) 16px 24px; }
+      #map { height:52dvh; position:absolute; }
+      .map-shade { height:52dvh; position:absolute; }
+      .topbar { top:12px; left:12px; right:12px; grid-template-columns:1fr auto; height:auto; gap:12px; }
+      .brand { height:44px; padding:8px 12px; }
+      .brand h1 { font-size:20px; }
+      .search { grid-column:1/-1; grid-row:2; }
+      .search-field { height:44px; }
+      .search-field input { height:40px; }
+      .search-results { top:52px; max-height:280px; }
+      .top-tools { grid-column:2; grid-row:1; height:44px; }
+      .session { position:relative; inset:auto; width:100%; max-height:none; margin-bottom:16px; }
+      .editor { position:relative; inset:auto; width:100%; max-height:none; margin-bottom:16px; }
+      .editor-body { overflow:visible; }
+      .vertex-list { max-height:180px; }
+      .bottom-left { position:absolute; top:calc(52dvh - 56px); bottom:auto; left:12px; max-width:none; }
+      .map-controls { position:absolute; top:calc(52dvh - 120px); bottom:auto; right:12px; gap:8px; }
+      .control-cluster { flex-direction:row; }
+      .layer-switch { display:none; }
+      body[data-tutorial-step="1"] .layer-switch { display:flex; }
+      .map-notice { position:absolute; top:128px; bottom:auto; left:12px; right:12px; }
+      .dialog-backdrop { padding:16px; }
+      .dialog { padding:24px; max-height:calc(100dvh - 32px); }
+      .dialog h2 { font-size:20px; line-height:28px; }
+      .checks { gap:16px; }
+      .dialog-actions { flex-direction:column-reverse; }
+      .toast-stack { top:120px; }
+      .metric-grid { grid-template-columns:1fr 1fr; }
+      .map-legend { padding:8px 12px; }
+    }
+    @media (max-width:980px) {
+      .tutorial-card { max-height:52dvh; padding:24px; }
+      .tutorial-footer { margin-top:16px; gap:8px; }
+      .tutorial-footer button { padding:8px 12px; }
+      .tutorial-content { margin-top:12px; }
+      /* Leave real scroll room below the final controls so the teaching sheet
+         cannot cover a highlighted start or settlement button. */
+      body[data-tutorial-step="3"] #app,body[data-tutorial-step="4"] #app,body[data-tutorial-step="5"] #app { padding-bottom:calc(52dvh + 160px); }
+    }
+    @media (prefers-reduced-motion:reduce) { *,*:before,*:after { animation:none!important; transition:none!important; scroll-behavior:auto!important; } }
+  </style>
+</head>
+<body>
+  <svg style="position:absolute;width:0;height:0" aria-hidden="true"><defs>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+    <symbol id="i-route" viewBox="0 0 24 24"><path d="M8 4h8a5 5 0 0 1 0 10H8a3 3 0 0 0 0 6h11"/><circle cx="5" cy="4" r="2"/><path d="m16 17 3 3-3 3"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M19 10c0 5-7 11-7 11S5 15 5 10a7 7 0 1 1 14 0Z"/><circle cx="12" cy="10" r="2.5"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><path d="M12 1v4m0 14v4M1 12h4m14 0h4"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="m8 4-5 5 5 5M3 9h11a6 6 0 0 1 0 12h-4"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M5 3h12l4 4v14H3V3h2Zm2 0v6h10V3M7 21v-8h10v8"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 4 13 8-13 8V4Z"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 4v3"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L20 5"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></symbol>
+    <symbol id="i-phone" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4m-3 14h2"/></symbol>
+    <symbol id="i-warning" viewBox="0 0 24 24"><path d="m12 3 10 18H2L12 3Zm0 6v5m0 3v.1"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.1"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 5v6h-6M4 19v-6h6M5.3 8a7.5 7.5 0 0 1 12.9-3L20 8M4 16l1.8 3A7.5 7.5 0 0 0 18.7 16"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M14 2 4 14h7l-1 8 10-12h-7l1-8Z"/></symbol>
+    <symbol id="i-signal" viewBox="0 0 24 24"><path d="M4 20v-3m5 3v-7m5 7V9m5 11V4"/></symbol>
+    <symbol id="i-battery" viewBox="0 0 24 24"><rect x="2" y="6" width="18" height="12" rx="2"/><path d="M23 10v4M6 10v4m4-4v4m4-4v4"/></symbol>
+    <symbol id="i-magnet" viewBox="0 0 24 24"><path d="M4 3h5v9a3 3 0 0 0 6 0V3h5v9a8 8 0 0 1-16 0V3Zm0 5h5m6 0h5"/></symbol>
+  </defs></svg>
+  <a class="skip" href="#session" data-i18n="skip">跳至巡航面板</a>
+  <main id="app">
+    <div id="map" role="application" data-i18n-aria="mapAria"><canvas id="fallback-map"></canvas></div>
+    <div class="map-shade"></div>
+    <header class="topbar">
+      <div class="brand glass"><img class="brand-symbol" src="/assets/chill-192.png?v=3" width="40" height="40" alt="" decoding="async"><h1>Chill</h1><span class="brand-context" data-i18n="workbench">轨迹工作台</span></div>
+      <div class="search" role="search"><div class="search-field glass"><svg class="icon muted"><use href="#i-search"/></svg><input id="search" type="search" autocomplete="off" spellcheck="false" data-i18n-placeholder="searchPlaceholder" data-i18n-aria="searchAria"><span class="shortcut">⌘ K</span></div><div id="search-results" class="search-results glass hidden" role="listbox"></div></div>
+      <nav class="top-tools" data-i18n-aria="preferences"><button id="tutorial-launch" class="tutorial-launch glass" aria-controls="tutorial" aria-expanded="false"><span aria-hidden="true">✨</span><span data-i18n="tutorial">新手教程</span></button><div class="language-switch glass"><button id="lang-zh" lang="zh-CN" aria-pressed="true" aria-label="简体中文">中文</button><button id="lang-en" lang="en" aria-pressed="false" aria-label="English">EN</button></div><button id="help" class="icon-button glass" data-i18n-title="help" data-i18n-aria="help"><svg class="icon"><use href="#i-info"/></svg></button></nav><!-- taste-skill-ignore: the user explicitly requested the sparkle tutorial button. -->
+    </header>
+    <aside class="editor glass" aria-labelledby="editor-title">
+      <div class="panel-heading"><h2 id="editor-title" data-i18n="routeEditor">路线编辑</h2><p class="small muted" data-i18n="editorSubtitle">让每一步，都有清晰的方向。</p></div>
+      <div class="segmented" role="tablist"><button id="mode-track" role="tab" aria-selected="true" data-i18n="trackTab">操场跑道</button><button id="mode-detour" role="tab" aria-selected="false" data-i18n="detourTab">支线草稿</button></div>
+      <div class="editor-body">
+        <p id="editor-instruction" class="editor-instruction"></p>
+        <div class="editor-meta"><span class="status-label"><span id="editor-dot" class="dot blue"></span><span id="editor-status"></span></span><span id="node-count" class="num small muted"></span></div>
+        <div id="vertex-list" class="vertex-list" role="list"></div>
+        <div id="target-toggle-wrap" class="target-toggle hidden"><input id="target-toggle" type="checkbox"><label for="target-toggle" data-i18n="markTarget">将选中点设为必经打卡点</label></div>
+        <div class="edit-actions"><button id="undo" class="text-button row" data-i18n-title="undo"><svg class="icon"><use href="#i-undo"/></svg><span data-i18n="undo">撤销上一点</span></button><button id="clear" class="text-button row"><svg class="icon"><use href="#i-trash"/></svg><span data-i18n="clear">清空重画</span></button></div>
+        <div id="track-width-wrap"><div class="track-width-row"><label for="track-width" data-i18n="trackWidth">跑道总宽（米）</label><input id="track-width" type="number" min="1" max="8" step="0.5" value="8" aria-describedby="track-width-note"></div><p id="track-width-note" class="small muted" data-i18n="trackWidthNote">基准线须位于红色跑道中线。宽度只限制相对基准线的偏移，不能自动识别底图边界。</p></div>
+        <button id="save-track" class="save-track outline full row" style="justify-content:center"><svg class="icon small-icon"><use href="#i-save"/></svg><span data-i18n="saveTrack">保存为默认跑道</span></button>
+        <div id="draft-tools" class="hidden"><p class="draft-notice" data-i18n="draftNotice">金色虚线仅为草稿。确认切入前，蓝点继续沿操场巡航。</p><button id="activate-detour" class="activate primary full row" style="justify-content:center"><svg class="icon small-icon"><use href="#i-bolt"/></svg><span data-i18n="activateDetour">确认切入支线</span></button></div>
+        <p id="editor-lock" class="editor-lock hidden" data-i18n="editorLocked">起点已锁定，操场跑道暂不可修改。仍可规划支线草稿。</p>
+      </div>
+    </aside>
+    <aside id="session" class="session glass" aria-labelledby="session-title" tabindex="-1">
+      <div class="session-top"><div id="device-badge" class="device-badge"><span id="device-dot" class="dot"></span><span id="device-label" data-i18n="connectingApp">正在连接工作台</span></div><div class="session-title"><h2 id="session-title" data-i18n="todaySession">今日巡航</h2><svg class="icon muted"><use href="#i-route"/></svg></div><p id="state-caption" class="state-caption" data-i18n="state_IDLE">绘制跑道，准备出发</p></div>
+      <div id="recovery-panel" class="rest-panel hidden"><p id="recovery-message" class="dialog-error" role="alert" data-i18n="recoveryNotice">上次异常退出，定位可能未恢复。请连接上次使用的 iPhone，并先恢复真实定位。</p><button id="recover-previous" class="outline" type="button" data-i18n="recoverPreviousLocation">连接上次设备并恢复定位</button></div>
+      <div id="rest-panel" class="rest-panel hidden">
+        <button id="rest-toggle" class="outline" type="button" data-i18n="restButton">歇一下（切换慢走）</button>
+        <button id="hold-position" class="outline hidden" type="button" data-i18n="holdPosition">原地驻留（定点保活）</button>
+        <p id="rest-status" aria-live="polite"></p><p id="rest-times"></p>
+      </div>
+      <section class="metrics" data-i18n-aria="metrics"><div class="distance-line"><output id="distance" class="distance-value num">0.00</output><span class="unit" data-i18n="km">公里</span><span class="distance-target"><span data-i18n="todayTarget">目标里程</span><br><span id="target-distance" class="num">—</span> <span data-i18n="km">公里</span></span></div><div id="progress" class="progress"><div id="progress-fill" class="progress-fill"></div></div><div id="goal-caption" class="goal-caption"><span class="dot"></span><span id="goal-text" data-i18n="goalBefore">锁定起点后显示本次目标里程</span></div><div class="lap-summary"><div><label data-i18n="currentLap">当前圈数</label><output id="current-lap" class="metric-value num">—</output></div><div class="lap-previous"><label data-i18n="previousLap">上一圈</label><output id="previous-lap" class="num">—</output></div></div><div class="metric-grid"><div><label data-i18n="pace">实时配速</label><output id="pace" class="metric-value num">—</output> <span class="unit" data-i18n="perKm">分/公里</span></div><div><label data-i18n="elapsed">运动用时</label><output id="elapsed" class="metric-value num">00:00</output></div><div><label data-i18n="stride">预估步幅</label><output id="stride" class="metric-value num">—</output> <span class="unit" data-i18n="metres">米</span></div><div><label data-i18n="laps">已完成圈数</label><output id="laps" class="metric-value num">0</output></div></div></section>
+      <section class="settings"><div><label for="profile" data-i18n="profile">巡航档位</label><select id="profile"><option value="standard" data-i18n="standard">标准档</option><option value="high_cadence" data-i18n="highCadence">高频摇步器档</option></select></div><div><label for="target-km" data-i18n="targetInput">目标公里</label><input id="target-km" type="number" min="0.1" max="100" step="0.1" value="2.0" inputmode="decimal"></div></section>
+      <div id="session-options" class="session-options"><label><input id="extra-distance" type="checkbox"><span data-i18n="extraDistance">允许少量超出目标</span></label><p id="target-plan"></p></div>
+      <section class="steps" data-i18n-aria="steps"><button id="lock-start" class="step primary"><span class="step-index">1</span><span class="step-label"><span data-i18n="lockStart">锁定操场起点</span><span id="lock-subtitle" class="step-subtitle" data-i18n="lockSubtitle">完成七项自检后驻留</span></span><svg class="icon"><use href="#i-chevron"/></svg></button><button id="start-cruise" class="step" disabled><span class="step-index">2</span><span class="step-label"><span data-i18n="startCruise">开始拟真巡航</span><span id="cruise-subtitle" class="step-subtitle" data-i18n="cruiseSubtitle">先锁定起点并等待五秒</span></span><svg class="icon"><use href="#i-play"/></svg></button><button id="safe-settle" class="step" disabled><span class="step-index">3</span><span class="step-label"><span data-i18n="safeSettle">安全结算并恢复</span><span class="step-subtitle" data-i18n="settleSubtitle">手机提交成功后恢复定位</span></span><svg class="icon"><use href="#i-check"/></svg></button></section>
+      <div id="discard-panel" class="rest-panel hidden">
+        <button id="discard-session" class="outline" type="button" data-i18n="discardSession">放弃本次未提交会话</button>
+      </div>
+      <p id="session-note" class="session-note" aria-live="polite" data-i18n="sessionNote">先在地图上沿操场添加至少三个锚点。</p>
+      <p id="session-error" class="session-error hidden" role="alert"></p>
+      <section class="coordinates" data-i18n-aria="coordinates"><div class="coordinate-row"><span data-i18n="mapCoordinate">地图坐标</span><output id="gcj-coordinate" class="coordinate">—</output></div><div class="coordinate-row"><span data-i18n="realCoordinate">真实坐标</span><output id="wgs-coordinate" class="coordinate">—</output></div></section>
+    </aside>
+    <div id="map-notice" class="map-notice glass hidden"><svg class="icon small-icon"><use href="#i-info"/></svg><p id="map-notice-text"></p><button id="retry-map" class="icon-button" data-i18n-title="retry" data-i18n-aria="retry"><svg class="icon small-icon"><use href="#i-refresh"/></svg></button></div>
+    <div class="bottom-left"><div class="map-legend glass"><span class="legend-item"><span class="legend-swatch"></span><span data-i18n="legendLoop">逆时针跑道</span></span><span class="legend-item"><span class="legend-swatch draft"></span><span data-i18n="legendDraft">待确认支线</span></span><span class="legend-item"><span class="legend-swatch target"></span><span data-i18n="legendTarget">十五米靶心区</span></span></div></div>
+    <div class="map-controls"><div class="control-cluster glass"><button id="locate" class="icon-button" data-i18n-title="fitTrack" data-i18n-aria="fitTrack"><svg class="icon"><use href="#i-target"/></svg></button><button id="zoom-in" class="icon-button" data-i18n-title="zoomIn" data-i18n-aria="zoomIn"><svg class="icon"><use href="#i-plus"/></svg></button><button id="zoom-out" class="icon-button" data-i18n-title="zoomOut" data-i18n-aria="zoomOut"><svg class="icon"><use href="#i-minus"/></svg></button></div><div class="layer-switch glass"><button id="layer-hybrid" aria-pressed="true" data-i18n="hybrid">卫星与路网</button><button id="layer-street" aria-pressed="false" data-i18n="street">标准街道</button></div></div>
+  </main>
+  <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+  <div id="tutorial" class="tutorial" hidden>
+    <svg class="tutorial-shade" aria-hidden="true" focusable="false">
+      <defs><mask id="tutorial-mask" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse"><rect width="100%" height="100%" fill="white"/><g id="tutorial-holes"></g></mask></defs>
+      <rect width="100%" height="100%" fill="rgba(0,0,0,.66)" mask="url(#tutorial-mask)"/>
+      <g id="tutorial-rings"></g>
+    </svg>
+    <section id="tutorial-card" class="tutorial-card glass" role="dialog" aria-modal="false" aria-labelledby="tutorial-title" aria-describedby="tutorial-body tutorial-hint" tabindex="-1">
+      <div class="tutorial-heading"><span id="tutorial-count" class="tutorial-count num"></span><button id="tutorial-dismiss" class="tutorial-dismiss" data-i18n="tutorialLater">稍后再看</button></div>
+      <div id="tutorial-content" class="tutorial-content" aria-live="polite" aria-atomic="true"><h2 id="tutorial-title"></h2><div id="tutorial-body" class="tutorial-body"></div><p id="tutorial-hint" class="tutorial-hint" data-i18n="tutorialHint">可直接操作高亮区域，也可点击下一步。教程不会暂停正在进行的巡航。</p></div>
+      <div class="tutorial-footer"><div id="tutorial-dots" class="tutorial-dots" aria-hidden="true"></div><button id="tutorial-previous" class="outline" data-i18n="tutorialPrevious">上一步</button><button id="tutorial-next" class="primary" data-i18n="tutorialNext">下一步</button></div>
+    </section>
+  </div>
+  <div id="modal" class="dialog-backdrop hidden"><section id="dialog" class="dialog glass" role="dialog" aria-modal="true" aria-labelledby="dialog-title" tabindex="-1"></section></div>
+  <script>
+  'use strict';
+  const i18n = {
+    zh: {
+      start_injecting:'正在向手机注入起点坐标…',
+      start_interrupted:'起点锁定期间手机连接中断或定位发送受阻，倒计时已取消。请放弃本次会话并安全恢复定位后，再锁定起点。',
+      holdPosition:'原地驻留（定点保活）',hold_unavailable:'请在暂停慢走或收尾慢走期间选择原地驻留。',
+      discardSession:'放弃本次未提交会话',discardIntro:'若未在手机开始、提交失败或决定取消，请先停止并关闭手机上的运动应用，再恢复定位。',
+      discardCheck:'我确认放弃本次会话。',discardAppClosed:'手机上的运动应用未打开，或已经彻底关闭。',
+      restoreAction:'安全恢复定位',sandboxSessionEnded:'沙盒会话已结束。',goalHeld:'已达目标，原地驻留中',
+      device_trust_required:'请解锁 iPhone，重新插好数据线，在手机上点「信任此电脑」并输入密码。',
+      device_developer_mode_required:'请在 iPhone 的「设置 → 隐私与安全性 → 开发者模式」中开启，重启并确认开启。',
+      tunnel_admin_required:'请关闭 Chill，右键点击 Chill.exe，选择「以管理员身份运行」，在 Windows 提示中选择「是」。',
+      operation_in_progress:'正在准备路线，请等待当前操作完成。',api_timeout:'操作响应超时，后台可能仍在处理。请等待状态更新后再重试。',multiple_devices:'检测到多台设备，请只保留一台或指定设备。',device_unavailable:'目标手机未连接，请连接原设备后重试。',tunnel_unavailable:'开发者隧道不可用，请根据下方具体原因检查权限、驱动或设备连接。',device_connection_failed:'手机连接失败，请查看下方具体原因。',
+      device_required:'真机模式需要先连接手机，无法连接时请使用沙盒预览。',
+      instance_running:'检测到另一个程序实例正在运行，请勿多开。请先关闭控制此手机的另一个窗口。',route_too_complex:'路线过长或锚点过于密集，已安全取消计算。请缩短路线或减少选点后重试。',
+      recoveryNotice:'上次异常退出，定位可能未恢复。请连接上次使用的 iPhone，并先恢复真实定位。',recoverPreviousLocation:'连接上次设备并恢复定位',recoveringLocation:'正在恢复上次定位',previousLocationRecovered:'上次会话的恢复指令已发送。',recovery_required:'请先恢复上次会话的真实定位，再开始新会话。',recovery_busy:'正在恢复上次会话，请稍候。',recovery_sandbox:'沙盒不会连接手机。请使用真机模式恢复上次定位。',recovery_invalid:'上次会话标记无法读取，无法确认目标设备。请联系维护者核查后恢复。',
+      control_cooldown:'操作过快，请等待一点五秒后重试。',speedFuseNote:'坐标发送已被速度熔断器阻止，当前里程仅为本机模拟。请保持连接并执行安全结算。',fuseBlocked:'坐标发送已熔断',deliveryLateNote:'坐标发送出现延迟，无法保证手机端收到完整轨迹。请检查连接状态。',
+
+      extraDistance:'允许少量超出目标',exactTargetNote:'接近目标时逐步转为慢走，达到后继续移动至手动结算。',randomTargetNote:'锁定时随机增加零至 {max} 米，实际目标会在开跑前显示。',actualTargetNote:'输入 {base} 公里，本次实际目标 {target} 公里（增加 {extra} 米）。',restButton:'歇一下（切换慢走）',restSlowing:'正在转为慢走',restResting:'慢走喘气中',restResuming:'正在恢复慢跑',restEnd:'恢复慢跑',restSlowingNote:'正在平滑转为慢走，沿跑道继续前进。',restRestingNote:'持续慢走，约 {n} 秒后自动恢复；也可点击“恢复慢跑”。',restResumingNote:'正在平滑恢复慢跑速度并回到常规路线。',restRunningNote:'需要缓一缓时，可切换慢走，保持沿跑道前进。',restTimes:'本次慢走 {current} · 累计慢走 {total} · 会话用时 {session}',rest_unavailable:'当前阶段无法开始休息。请等待巡航就绪或收尾完成。',resume_unavailable:'尚未进入慢走阶段，或会话已结束，暂时不能恢复慢跑。',
+
+      finishing:'正在转为收尾慢走',finishingNote:'正在平滑转为慢走，将持续移动至手动安全结算。',targetWalking:'目标收尾慢走中',targetWalkingNote:'继续沿外道慢走，里程和用时仍会累计。完成手机提交并关闭应用后，请手动安全结算。不会自动恢复跑步。',targetWalkingButton:'保持慢走，等待结算',detourFinishingNote:'已达目标，正在完成已确认支线，回到跑道后继续慢走至手动结算。',goalFailed:'运行异常，本次运动已停止',engineStopped:'运行异常，运动已停止',engineStoppedNote:'运动引擎发生异常，已停止移动。定位尚未恢复，请保持连接并执行安全结算。',deviceIssueNote:'手机连接暂不可用，当前里程仅由本机计算。请检查数据线和手机连接状态。',
+
+      trackWidth:'跑道总宽（米）',trackWidthNote:'基准线须位于红色跑道中线。宽度只限制相对基准线的偏移，不能自动识别底图边界。',invalid_track_width:'可用跑道总宽度须为一至八米。',detour_crosses_infield:'支线切入曲线越过了内场，已继续沿操场巡航。请沿外围道路补充引路点。',
+      currentLap:"当前圈数",
+      lapNumber:"第 {n} 圈",
+      previousLap:"上一圈",
+      previousLapDetail:"（{duration} · {pace}/公里）",
+      traceUnavailable:"历史轨迹暂不可用，正在重试。后台巡航继续运行。",
+      tutorial:"新手教程",
+      tutorialProgress:"第 {n} 步 / 共 {total} 步",
+      tutorialLater:"稍后再看",
+      tutorialPrevious:"上一步",
+      tutorialNext:"下一步",
+      tutorialFinish:"我学会了",
+      tutorialHint:"可直接操作高亮区域，也可点击下一步。教程不会暂停正在进行的巡航。",
+      tutorial1Title:"寻找你的操场",
+      tutorial1Body:"首先在搜索框输入你的学校名称，找到体育场。也可以直接输入纬度、经度。\n\n建议保持默认的“卫星与路网”混合图，既能看清红色塑胶跑道，也能看清周边的教学楼名称。",
+      tutorial2Title:"绘制专属逆时针跑道",
+      tutorial2Body:"只需绘制一次：沿卫星图上的塑胶跑道点击六至八个点，围成一圈。点歪了，可以按住锚点拖动微调；系统会自动平滑并校正为逆时针。\n\n调整后点击“保存为默认跑道”。以后打开会自动加载，无需重复绘制。",
+      tutorial3Title:"开跑前，先做好三件事",
+      tutorial3Body:"① 确认学校所在地天气正常，没有暴雨或台风，并处于校园允许运动的白天或傍晚时段。\n\n② 在手机设置中彻底关闭无线网络与蓝牙，仅使用移动数据；从后台彻底划掉运动应用，并确认巡航档位。\n\n③ 插好数据线，点击“锁定操场起点”，完成七项自检并等待五秒。先用手机自带地图确认蓝点位置稳定，再打开运动应用。",
+      tutorial4Title:"摇步器与临时支线",
+      tutorial4Body:"点击“开始拟真巡航”后，将手机倒置或垫高，远离摇步器底座磁铁；用皮筋将数据线固定在支架上，避免晃动松脱。\n\n平时蓝点沿操场绕圈。如需经过校外必经点，切到“支线草稿”，沿校园道路点选路径并标记①②靶心。检查金色虚线不穿墙后，点击“确认切入支线”。\n\n草稿确认前不影响巡航。确认后会先跑到出口，经过必经点，再平滑并回操场；请亲自核对连接路段也沿道路行进。",
+      tutorial5Title:"先提交，再安全恢复",
+      tutorial5Body:"里程提示灯变绿，表示已达到今日随机建议里程。此时先在手机运动应用里结束记录，并确认上传成功。\n\n黄金顺序：手机提交成功 → 从后台彻底划掉运动应用 → 电脑点击“安全结算并恢复”。\n\n保持连接。恢复指令发出后，用手机自带的「地图」确认蓝点回到真实位置再拔线。若未恢复，请重启手机。手机应用中的实际记录仍需亲自确认。",
+      check7:"🌤️ 已确认当前学校所在地天气正常（非暴雨、台风天），且处于常规运动时间段（非深夜锁门时段）。", // taste-skill-ignore: the user explicitly requested a weather emoji in both languages.
+      settleOrder:"请按顺序操作：手机提交成功 → 从后台划掉运动应用 → 在电脑发送恢复指令 → 在手机自带的「地图」确认真实位置后再拔线。",
+      skip:'跳至巡航面板',workbench:'轨迹工作台',searchPlaceholder:'搜索大学、地点或纬度, 经度',searchAria:'搜索地点或输入经纬度',preferences:'偏好设置',help:'使用指南',mapAria:'路线编辑地图',routeEditor:'路线编辑',editorSubtitle:'让每一步，都有清晰的方向。',trackTab:'操场跑道',detourTab:'支线草稿',trackInstruction:'沿跑道点击添加锚点，拖动锚点微调。闭环自动平滑并校正为逆时针。',detourInstruction:'沿道路添加引路点。选中锚点后，将它标记为必经打卡点。',undo:'撤销上一点',clear:'清空重画',saveTrack:'保存为默认跑道',markTarget:'将选中点设为必经打卡点',draftNotice:'金色虚线仅为草稿。确认切入前，蓝点继续沿操场巡航。',activateDetour:'确认切入支线',editorLocked:'起点已锁定，操场跑道暂不可修改。仍可规划支线草稿。',connectingApp:'正在连接工作台',todaySession:'今日巡航',metrics:'实时运动数据',km:'公里',metres:'米',todayTarget:'目标里程',goalBefore:'锁定起点后显示本次目标里程',goalEnded:'本次会话已结束',trackReadyNote:'跑道已就绪，锁定起点前请完成七项自检。',pace:'实时配速',perKm:'分/公里',elapsed:'运动用时',stride:'预估步幅',laps:'已完成圈数',profile:'巡航档位',standard:'标准档',highCadence:'高频摇步器档',targetInput:'目标公里',steps:'三步安全操作',lockStart:'锁定操场起点',lockSubtitle:'完成七项自检后驻留',startCruise:'开始拟真巡航',cruiseSubtitle:'先锁定起点并等待五秒',safeSettle:'安全结算并恢复',settleSubtitle:'手机提交成功后恢复定位',sessionNote:'先在地图上沿操场添加至少三个锚点。',coordinates:'实时坐标',mapCoordinate:'地图坐标',realCoordinate:'真实坐标',retry:'重试',fitTrack:'回到跑道',zoomIn:'放大地图',zoomOut:'缩小地图',hybrid:'卫星与路网',street:'标准街道',legendLoop:'逆时针跑道',legendDraft:'待确认支线',legendTarget:'十五米靶心区',state_IDLE:'绘制跑道，准备出发',state_LOCKED_START:'起点驻留中',state_CRUISING_LOOP:'沿操场逆时针巡航',state_CRUISING_DETOUR:'支线巡航，正在经过打卡点',state_SAFE_STOPPED:'运动已停止，等待安全恢复',sandbox:'沙盒预览模式',connected:'真机接管中',deviceReady:'真机已连接',deviceConnecting:'正在连接手机',restored:'恢复指令已发送',nodeCount:'{n} 个锚点',targetCount:'{n} 个打卡点',trackEmpty:'点击地图，添加第一个跑道锚点。',draftEmpty:'点击道路，规划第一段支线。',editing:'正在绘制',saved:'已保存',saving:'正在保存',smoothReady:'逆时针 · {n} 米',draftStatus:'尚未提交',targetLabel:'必经打卡点 {n}',anchorLabel:'锚点 {n}',guideLabel:'引路点 {n}',removePoint:'移除此点',goalRunning:'本次目标 {n} 公里，达到后继续慢走至手动结算',goalReached:'已达目标里程，仍在移动，请手动结算',countdown:'起点稳定中，还需 {n} 秒',openPhone:'现在可以打开手机应用并启动摇步器',cruiseReady:'起点已稳定，可以开始',loopNote:'巡航保持运行。需要临时打卡时，可在左侧规划支线。',pendingNote:'支线已确认，正在沿操场前往最近出口。',detourNote:'正在经过支线打卡点，完成后自动并回操场。',stoppedNote:'运动已结束，原地保持 {hold}。运动用时已停止计时，请完成安全结算。',restoredNote:'恢复指令已发送（请打开 iPhone 自带『地图』确认蓝点已回到真实位置；若未恢复，请重启手机）',sandboxNote:'未接管真机。所有里程与轨迹均由本机引擎计算。',batteryLow:'手机电量偏低：{n}%。请检查供电。',driverMissing:'没有检测到苹果设备驱动。请在 Microsoft Store 安装「Apple 设备」，重新插上 iPhone 后再打开 Chill。',driverStopped:'苹果移动设备服务尚未运行，真机连接可能不可用。',awakeIssue:'防休眠设置失败，请检查系统电源设置。',clockChecking:'正在校验系统时间',clockSynced:'系统时间校验通过 · 偏差 {n} 秒',clockSkew:'系统时间偏差 {n} 秒，请校正后重试',clockOffline:'外部校时不可达，请人工确认电脑与手机时间一致',clockStale:'校时结果已过期，请重新校验',clockNote:'使用服务器时间进行秒级偏差校验。超过三十秒会阻止锁定。',checklistTitle:'开跑前，确认这七件事',checklistIntro:'起点坐标发送后会驻留五秒。此时先不要打开手机运动应用。',check1:'手机已在系统设置中彻底关闭无线网络与蓝牙，仅使用第五代移动网络流量。',check2:'手机已关闭低电量模式，屏幕保持常亮并处于解锁状态。',check3:'手机已倒置或垫高，远离摇步器底座磁铁；数据线已绑紧固定。',check4:'运动应用已从手机多任务后台彻底向上划掉，确保下次冷启动。',check5:'已确认电脑与手机时间一致。',check6:'已核对跑道位置、巡航档位和本次目标里程。',confirmLock:'全部确认，锁定起点',cancel:'取消',understood:'我知道了',settleTitle:'先提交，再恢复真实定位',settleIntro:'请确认已在手机应用内完成提交、看到打卡成功，且已将手机应用从后台彻底划掉。确认后再恢复真实定位。',settleCheck1:'已在手机应用内提交本次运动记录。',settleCheck2:'已看到打卡成功或提交成功的结果。',settleCheck3:'已将手机运动应用从后台彻底划掉。',confirmRestore:'确认完成，恢复真实定位',restoring:'正在恢复定位',restoreWarning:'恢复失败时窗口仍会受到保护。请保持连接并重试。',closeTitle:'请先完成安全结算',closeWarning:'正在接管 iPhone 定位。请先完成第 3 步安全结算，再关闭窗口；直接退出可能中断模拟定位。',goSettle:'前往安全结算',clearTitle:'清空当前路线？',clearTrackBody:'当前跑道锚点将被清空。你可以使用撤销恢复。',clearDraftBody:'仅清空未提交的支线草稿，已确认的路线仍由引擎执行。',confirmClear:'清空锚点',activateTitle:'确认这条支线',activateBody:'共 {p} 个锚点、{t} 个必经打卡点。请确认路线沿道路行进，没有穿越建筑。蓝点会先沿操场到达出口，再平滑切入。',confirmActivate:'路线已检查，确认切入',helpTitle:'一张地图，三步出发',help1Title:'绘制与微调',help1:'点击地图放置跑道锚点，拖动调整。地图使用高德坐标，设备注入前由后端转换为真实坐标。',help2Title:'草稿与执行互不干扰',help2:'金色虚线不会改变当前巡航。标记必经点并确认后，才会排队前往操场出口。',help3Title:'结算后再恢复',help3:'先在手机应用提交并关闭，再点击安全结算。关闭窗口不会替你结束运行中的会话。',help4Title:'连接与时间',help4:'无真机时自动使用沙盒。真实定位的恢复与第三方应用的记录结果，需要在设备上确认。',helpStride:'步幅按每分钟一百九十二步估算。',working:'正在处理',searching:'正在搜索',noResults:'未找到地点。可尝试大学名称，或直接输入纬度, 经度。',remoteUnavailable:'在线建议暂不可用。可搜索内置高校，或输入纬度, 经度。',campus:'高校',place:'地点',coordinateSource:'坐标',mapUnavailable:'地图资源暂不可用，已切换为可编辑的本地坐标画布。',tilesUnavailable:'部分地图瓦片加载失败，可切换图层或重试。',backendUnavailable:'工作台连接中断，正在重试。后台巡航不受界面刷新影响。',offlineStatic:'请通过主程序启动，或使用本地预览模式打开。',trackSaved:'默认跑道已保存',detourQueued:'支线已确认，蓝点将先沿操场到达出口。',sessionStarted:'已开始逆时针巡航',locationRestored:'恢复指令已发送。',modeSwitched:'已切换至支线草稿，当前巡航继续运行。',config_load_failed:'配置读取失败，已加载默认设置。',config_save_failed:'配置未能保存，请检查文件写入权限。',invalid_points:'坐标无效，请检查锚点。',invalid_profile:'请选择有效的巡航档位。',invalid_target:'目标里程需为零点一至一百公里。',invalid_preferences:'偏好设置无效。',operation_failed:'操作未完成，请重试。',invalid_track:'跑道至少需要三个不同锚点，且不能全部共线。',track_locked:'会话运行时不能修改操场跑道或档位。',checklist_required:'请逐项确认全部七项自检。',clock_required:'请等待校时结果，或校正电脑时间后重新检查。',lock_failed:'无法锁定起点，请检查跑道后重试。',lock_first:'请先锁定起点。',countdown_active:'请等待起点驻留五秒完成。',target_required:'请至少标记一个必经打卡点。',cruise_first:'请先开始操场巡航，再确认切入支线。',detour_busy:'已有支线正在等待或执行，请完成后再提交。',invalid_detour:'支线无法生成，请沿外围道路添加引路点，避免跨越操场内场，并检查锚点距离。',settlement_required:'请确认手机提交成功，并已关闭运动应用。',settlement_busy:'正在执行安全结算，请稍候。',no_session:'当前没有需要恢复的会话。',restore_failed:'未能确认恢复定位。请保持手机连接并重试，暂时不要关闭窗口。',app_closed:'工作台已关闭，请重新启动。',invalid_search:'搜索内容无效。',invalid_request:'请求格式无效，请重试。',connectionLost:'暂时无法连接后端，请稍后重试。',newTarget:'添加打卡点',editLocked:'请切换到支线草稿，或先完成安全结算。'
+    },
+    en: {
+      start_injecting:'Sending the starting location to your iPhone…',
+      start_interrupted:'The phone disconnected or location delivery was blocked during setup. The countdown was cancelled. Discard this session and restore location before locking the start again.',
+      holdPosition:'Hold position',hold_unavailable:'You can hold your position during a walking break or the finishing walk.',
+      discardSession:'Discard unsubmitted session',discardIntro:'If you did not start, could not submit, or want to cancel, end and close the fitness app on your phone before restoring location.',
+      discardCheck:'I want to discard this session.',discardAppClosed:'The fitness app is already closed or was never opened.',
+      restoreAction:'Restore location',sandboxSessionEnded:'The sandbox session has ended.',goalHeld:'Target reached. Holding position.',
+      device_trust_required:'On your iPhone, enter your passcode to open the Home Screen. Reconnect the cable, tap Trust This Computer, and follow the prompt.',
+      device_developer_mode_required:'On your iPhone, open Settings → Privacy & Security → Developer Mode. Turn it on, restart, and confirm.',
+      tunnel_admin_required:'Close Chill, right click Chill.exe, choose Run as administrator, and select Yes at the Windows prompt.',
+      operation_in_progress:'Preparing the route. Wait for the current operation to finish.',api_timeout:'The response timed out. The backend may still be working; wait for a status update before retrying.',multiple_devices:'Multiple devices detected. Keep only one connected or specify a device.',device_unavailable:'The selected phone is unavailable. Connect the original device and retry.',tunnel_unavailable:'The developer tunnel is unavailable. Check the diagnostic below for permissions, drivers or connection issues.',device_connection_failed:'The phone could not connect. See the diagnostic below.',
+      device_required:'Device mode requires a connected phone. Use sandbox preview when a device is unavailable.',
+      instance_running:'Another instance controls this phone. Close its other window before connecting.',route_too_complex:'The route is too long or dense. Calculation was safely cancelled; shorten the route or remove points and retry.',
+      recoveryNotice:'The previous session did not confirm location restoration. Connect the same iPhone and restore its location before starting.',recoverPreviousLocation:'Connect and restore the previous iPhone',recoveringLocation:'Restoring the previous location',previousLocationRecovered:'Restore command sent for the previous session.',recovery_required:'Restore the previous location session before starting a new one.',recovery_busy:'The previous location session is being restored. Please wait.',recovery_sandbox:'Sandbox cannot connect to an iPhone. Use device mode to restore the previous location.',recovery_invalid:'The previous session marker is unreadable. The target device cannot be identified. Contact the maintainer for recovery.',
+      control_cooldown:'Please wait 1.5 seconds before another motion command.',speedFuseNote:'The speed fuse blocked coordinate transmission. Distance is simulated locally. Keep the device connected and settle the session.',fuseBlocked:'Coordinate transmission blocked',deliveryLateNote:'Coordinate delivery is delayed. Complete delivery to the phone cannot be guaranteed. Check the connection.',
+
+      extraDistance:'Allow a small extra distance',exactTargetNote:'Slow to a walk near the target. Keep moving until manual settlement.',randomTargetNote:'Locking adds 0 to {max} m at random. The actual target is shown before cruising.',actualTargetNote:'Entered {base} km. Actual target {target} km (extra {extra} m).',restButton:'Take a walking break',restSlowing:'Slowing to a walk',restResting:'Walking break',restResuming:'Returning to a jog',restEnd:'Resume jogging',restSlowingNote:'Smoothly transitioning to a walk while continuing along the track.',restRestingNote:'Continuing to walk. Jogging resumes in about {n} s, or choose Resume jogging.',restResumingNote:'Smoothly returning to jogging speed and the regular running line.',restRunningNote:'Take a walking break to recover while continuing along the track.',restTimes:'This walk {current} · Total walking {total} · Session time {session}',rest_unavailable:'A break is unavailable in this phase. Wait for cruising or completion.',resume_unavailable:'The session is not in a walking break, or has already ended.',
+
+      finishing:'Transitioning to a finishing walk',finishingNote:'Slowing smoothly to a walk. Movement continues until you settle manually.',targetWalking:'Finishing walk in progress',targetWalkingNote:'Walking continues in the outer lane. Distance and time keep increasing. Submit and close the phone app, then settle manually. Running will not resume automatically.',targetWalkingButton:'Keep walking until settlement',detourFinishingNote:'Target reached. Completing the committed detour, then walking on the loop until manual settlement.',goalFailed:'Motion stopped because of an error',engineStopped:'Engine error; motion stopped',engineStoppedNote:'The motion engine failed and movement stopped. Location has not been restored. Keep the device connected and settle the session.',deviceIssueNote:'The phone connection is unavailable. Distance is currently calculated locally. Check the cable and phone connection.',
+
+      trackWidth:'Track width (m)',trackWidthNote:'Place the baseline midway across the red running strip. Width limits movement relative to that line; it cannot detect satellite boundaries.',invalid_track_width:'Usable track width must be between 1 and 8 metres.',detour_crosses_infield:'The detour merge would cross the infield. Track cruise continues. Add anchors along the perimeter roads.',
+      currentLap:"Lap",
+      lapNumber:"Lap {n}",
+      previousLap:"Previous lap",
+      previousLapDetail:"({duration} · {pace}/km)",
+      traceUnavailable:"History is temporarily unavailable. Retrying while the background cruise continues.",
+      tutorial:"Tutorial",
+      tutorialProgress:"Step {n} of {total}",
+      tutorialLater:"Maybe later",
+      tutorialPrevious:"Back",
+      tutorialNext:"Next",
+      tutorialFinish:"Got it",
+      tutorialHint:"You can use the highlighted controls or choose Next. The tutorial keeps any active cruise running.",
+      tutorial1Title:"Find your track",
+      tutorial1Body:"Search for your university to find its stadium. You can also enter latitude and longitude directly.\n\nKeep the default Satellite & roads layer to see both the running track and the surrounding building names.",
+      tutorial2Title:"Draw your track once",
+      tutorial2Body:"Click six to eight anchors around the running track to form a loop. Drag any anchor to refine it. The curve is automatically smoothed and corrected to run counterclockwise.\n\nChoose Save as default track when it looks right. Your saved track loads next time, so there is no need to draw it every day.",
+      tutorial3Title:"Three things before you start",
+      tutorial3Body:"1. Check the weather at your school. Avoid heavy rain or typhoons, and choose normal daytime or evening exercise hours while the campus is open.\n\n2. Turn off Wi-Fi and Bluetooth in phone Settings, use cellular data, fully swipe the fitness app away, and check the cruise profile.\n\n3. Connect the cable, choose Lock track start, complete all seven checks, and wait five seconds. Check the blue dot in the phone’s Maps app first, then open the fitness app.",
+      tutorial4Title:"The shaker and detour drafts",
+      tutorial4Body:"Choose Start natural cruise. Invert or raise the phone away from the shaker’s base magnets, and secure the data cable to the stand so it cannot shake loose.\n\nFor a required checkpoint outside the track, choose Detour draft. Place anchors along campus roads and mark checkpoints ① and ②. Check that the gold dashed route avoids buildings, then choose Confirm detour.\n\nDrafts leave cruise unchanged. A confirmed route uses the track exit, visits the checkpoints, and merges back. Check the connecting segments yourself to ensure they also follow roads.",
+      tutorial5Title:"Submit, then restore location",
+      tutorial5Body:"The distance indicator turns green when you reach today’s suggested distance. End the record in the phone app and confirm that the upload succeeded.\n\nKeep this order: successful phone submission → fully swipe the fitness app away → choose Settle & restore on the computer.\n\nAfter the restore command is sent, confirm your real location in Maps on the phone before disconnecting. Restart the phone if your real location does not return. Verify the actual record in the phone app.",
+      check7:"🌤️ I checked the weather at my school: no heavy rain or typhoon, and the time is within normal exercise and campus opening hours.", // taste-skill-ignore: the user explicitly requested a weather emoji in both languages.
+      settleOrder:"Keep this order: successful phone submission → swipe the fitness app away → send the restore command here → check your real location in Maps on your iPhone before disconnecting.",
+      skip:'Skip to session controls',workbench:'Route workbench',searchPlaceholder:'University, place, or latitude, longitude',searchAria:'Search places or enter coordinates',preferences:'Preferences',help:'User guide',mapAria:'Route editing map',routeEditor:'Route editor',editorSubtitle:'A clear direction for every step.',trackTab:'Track',detourTab:'Detour draft',trackInstruction:'Click along the track to add anchors. Drag to refine. The loop is smoothed and corrected to counterclockwise.',detourInstruction:'Add guide points along roads. Select an anchor to mark it as a required checkpoint.',undo:'Undo last point',clear:'Clear & redraw',saveTrack:'Save as default track',markTarget:'Mark the selected point as a required checkpoint',draftNotice:'The gold dashed line is a draft. The blue dot stays on the track until you confirm.',activateDetour:'Confirm detour',editorLocked:'The start is locked, so the track cannot be edited. You can still plan a detour.',connectingApp:'Connecting to workbench',todaySession:'Today’s session',metrics:'Live motion data',km:'km',metres:'m',todayTarget:'Target distance',goalBefore:'Lock the start to confirm the target distance',goalEnded:'This session has ended',trackReadyNote:'Track ready. Complete the checks to lock the start.',pace:'Current pace',perKm:'/km',elapsed:'Motion time',stride:'Estimated stride',laps:'Completed laps',profile:'Cruise profile',standard:'Standard',highCadence:'High cadence',targetInput:'Target km',steps:'Three safety steps',lockStart:'Lock track start',lockSubtitle:'Complete the seven preflight checks',startCruise:'Start natural cruise',cruiseSubtitle:'Lock the start, then wait five seconds',safeSettle:'Settle & restore',settleSubtitle:'Restore after submitting on your phone',sessionNote:'Add at least three anchors along the track on the map.',coordinates:'Live coordinates',mapCoordinate:'Map coordinates',realCoordinate:'Device coordinates',retry:'Retry',fitTrack:'Return to track',zoomIn:'Zoom in',zoomOut:'Zoom out',hybrid:'Satellite & roads',street:'Street map',legendLoop:'Counterclockwise track',legendDraft:'Unconfirmed detour',legendTarget:'15 m checkpoint zone',state_IDLE:'Draw your track and prepare to start',state_LOCKED_START:'Holding the starting position',state_CRUISING_LOOP:'Cruising counterclockwise on the track',state_CRUISING_DETOUR:'Following the detour through checkpoints',state_SAFE_STOPPED:'Motion stopped; awaiting location restoration',sandbox:'Sandbox preview',connected:'Controlling iPhone location',deviceReady:'iPhone connected',deviceConnecting:'Connecting to iPhone',restored:'Restore command sent',nodeCount:'{n} anchors',targetCount:'{n} checkpoints',trackEmpty:'Click the map to place your first track anchor.',draftEmpty:'Click a road to start planning your detour.',editing:'Drawing',saved:'Saved',saving:'Saving',smoothReady:'Counterclockwise · {n} m',draftStatus:'Not submitted',targetLabel:'Required checkpoint {n}',anchorLabel:'Anchor {n}',guideLabel:'Guide point {n}',removePoint:'Remove this point',goalRunning:'Target: {n} km. Walking continues after the target until manual settlement.',goalReached:'Target reached. Still moving; settle manually.',countdown:'Holding the start for {n} more seconds',openPhone:'You can now open the phone app and start the shaker',cruiseReady:'The starting position is stable. Ready to cruise.',loopNote:'Cruise stays active while you plan a detour on the left.',pendingNote:'Detour confirmed. Following the track to the nearest exit.',detourNote:'Passing detour checkpoints, then merging back onto the track.',stoppedNote:'Motion ended. Holding the final location for {hold}. Motion time is frozen; settle the session.',restoredNote:'Restore command sent. Open Maps on your iPhone and check that the blue dot shows your real location. If it does not, restart your iPhone.',sandboxNote:'No physical device is controlled. This computer calculates the route and distance.',batteryLow:'Phone battery is low: {n}%. Check the power connection.',driverMissing:'Apple Mobile Device Service was not found. Install the Apple device driver. Sandbox preview remains available.',driverStopped:'Apple Mobile Device Service is stopped. Device connectivity may be unavailable.',awakeIssue:'Sleep prevention failed. Check system power settings.',clockChecking:'Checking system time',clockSynced:'System time verified · offset {n} s',clockSkew:'System clock differs by {n} s. Correct it and retry.',clockOffline:'External time check unavailable. Confirm that your computer and iPhone show the same time.',clockStale:'Time verification has expired. Check again.',clockNote:'Server time provides a seconds-level clock check. An offset over 30 seconds prevents locking.',checklistTitle:'Seven checks before you start',checklistIntro:'The five second hold begins after the start location is sent. Keep the phone’s fitness app closed for now.',check1:'Wi-Fi and Bluetooth are fully disabled in phone Settings. Only 5G cellular data is in use.',check2:'Low Power Mode is off. The phone stays unlocked with its display on.',check3:'The phone is inverted or raised away from the shaker’s base magnets. The data cable is secured.',check4:'The fitness app has been fully swiped away from the phone’s app switcher for a cold start.',check5:'I confirmed that the computer and iPhone show the same time.',check6:'The track location, cruise profile, and target distance have been reviewed.',confirmLock:'All checked. Lock the start.',cancel:'Cancel',understood:'Understood',settleTitle:'Submit first. Restore location next.',settleIntro:'Confirm that you submitted in the phone app, saw a successful check-in, and fully swiped the app away. Then restore the real location.',settleCheck1:'I submitted this session in the phone app.',settleCheck2:'I saw a successful check-in or submission result.',settleCheck3:'I fully swiped the fitness app away from the phone’s app switcher.',confirmRestore:'Confirmed. Restore real location.',restoring:'Restoring location',restoreWarning:'If restoration fails, the window remains protected. Keep the phone connected and retry.',closeTitle:'Complete safe settlement first',closeWarning:'Your iPhone’s location is being controlled. Complete step 3, Settle & restore, before closing the window. Quitting directly may interrupt simulated location.',goSettle:'Go to settlement',clearTitle:'Clear the current route?',clearTrackBody:'This clears the current track anchors. Undo can restore them.',clearDraftBody:'Only the unsubmitted draft is cleared. The engine keeps following any confirmed route.',confirmClear:'Clear anchors',activateTitle:'Review this detour',activateBody:'Anchors: {p}. Required checkpoints: {t}. Confirm that the route follows roads and does not cross buildings. The blue dot will follow the track to the exit before merging.',confirmActivate:'Route reviewed. Confirm detour.',helpTitle:'One map. Three steps to start.',help1Title:'Draw and refine',help1:'Click the map to place track anchors and drag to adjust. The backend converts map coordinates to device coordinates before injection.',help2Title:'Draft independently',help2:'The gold dashed route does not change the current cruise. Mark checkpoints and confirm to queue the detour at the track exit.',help3Title:'Settle before restoring',help3:'Submit and close the phone app first, then settle here. Closing the window does not end an active session.',help4Title:'Connection and time',help4:'Sandbox is used when a device is unavailable. Verify location restoration and third-party app records on the phone itself.',helpStride:'Stride is estimated at 192 steps per minute.',working:'Working',searching:'Searching',noResults:'No places found. Try a university name or enter latitude, longitude.',remoteUnavailable:'Online suggestions are unavailable. Search a built-in campus or enter latitude, longitude.',campus:'Campus',place:'Place',coordinateSource:'Coordinates',mapUnavailable:'Map resources are unavailable. An editable local coordinate canvas is active.',tilesUnavailable:'Some map tiles failed to load. Switch layers or retry.',backendUnavailable:'Workbench connection interrupted. Retrying. Background cruise is independent of UI refresh.',offlineStatic:'Launch this page through the main program or local preview mode.',trackSaved:'Default track saved',detourQueued:'Detour confirmed. The blue dot will follow the track to the exit.',sessionStarted:'Counterclockwise cruise started',locationRestored:'Restore command sent.',modeSwitched:'Detour draft selected. The current cruise stays active.',config_load_failed:'Configuration could not be read. Defaults were loaded.',config_save_failed:'Configuration could not be saved. Check file permissions.',invalid_points:'Invalid coordinates. Check the anchors.',invalid_profile:'Choose a valid cruise profile.',invalid_target:'Target distance must be between 0.1 and 100 km.',invalid_preferences:'Invalid preferences.',operation_failed:'The operation did not complete. Try again.',invalid_track:'A track needs at least three distinct anchors that are not all collinear.',track_locked:'The track and profile cannot be edited during an active session.',checklist_required:'Confirm all seven preflight checks.',clock_required:'Wait for the time check or correct the computer time and retry.',lock_failed:'The start could not be locked. Check the track and retry.',lock_first:'Lock the starting position first.',countdown_active:'Wait for the five-second starting hold to finish.',target_required:'Mark at least one required checkpoint.',cruise_first:'Start track cruise before confirming a detour.',detour_busy:'A detour is already queued or active. Wait for it to finish.',invalid_detour:'The detour could not be built. Add perimeter road anchors, avoid the infield, and check point spacing.',settlement_required:'Confirm the phone submission succeeded and the fitness app is fully closed.',settlement_busy:'Settlement is in progress. Please wait.',no_session:'There is no session to restore.',restore_failed:'Location restoration could not be confirmed. Keep the phone connected and retry. Do not close the window yet.',app_closed:'The workbench is closed. Launch it again.',invalid_search:'Invalid search query.',invalid_request:'Invalid request. Please retry.',connectionLost:'The backend is temporarily unavailable. Try again shortly.',newTarget:'Add checkpoint',editLocked:'Switch to detour draft or finish safe settlement first.'
+    }
+  };
+  const $ = id => document.getElementById(id);
+  const TRACE_LIMIT = 3600;
+  const esc = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  const clone = value => JSON.parse(JSON.stringify(value));
+  const icon = (name,classes='') => `<svg class="icon ${classes}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+  const model = {language:'zh',mode:'track',track:[],draft:[],curve:[],curveLength:0,selected:-1,history:{track:[],detour:[]},state:null,stateSeq:0,config:null,layer:'hybrid',saving:false,busy:false,connected:false,modal:null,dialogError:null,checks:[],settleChecks:[],searchSequence:0,activePath:[],trace:[],traceSession:null,traceSequence:0};
+  function t(key,values={}) { return (i18n[model.language][key] || i18n[model.language].operation_failed).replace(/\{(\w+)\}/g,(_,name)=>values[name] ?? ''); }
+  function currentPoints() { return model.mode==='track' ? model.track : model.draft; }
+  function trackLocked() { return Boolean(model.state?.session_active || model.state?.settling); }
+  function formatCoordinate(p) { return p ? `${p.lat.toFixed(6)}, ${p.lon.toFixed(6)}` : '—'; }
+  function toast(key,values={},error=false) { const element=document.createElement('div'); element.className='toast glass'+(error?' error':''); element.dataset.key=key; element.dataset.values=JSON.stringify(values); element.textContent=t(key,values); $('toast-stack').append(element); setTimeout(()=>element.remove(),5500); }
+  async function api(method,...args) {
+    let response;
+    if (window.pywebview?.api?.[method]) {
+      let timer;
+      try {
+        response=await Promise.race([
+          Promise.resolve().then(()=>window.pywebview.api[method](...args)),
+          new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('api_timeout')),8000);})
+        ]);
+      } finally { clearTimeout(timer); }
+    }
+    else {
+      const token=document.querySelector('meta[name="piggy-token"]').content;
+      if (!token || token.startsWith('__PIGGY_')) throw new Error('offlineStatic');
+      const controller=new AbortController();
+      const timer=setTimeout(()=>controller.abort(),8000);
+      try { const result=await fetch(`/api/${method}`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({args}),signal:controller.signal,cache:'no-store'}); if(!result.ok) throw new Error('connectionLost'); response=await result.json(); }
+      catch(error) { if(controller.signal.aborted)throw new Error('api_timeout');throw error; }
+      finally { clearTimeout(timer); }
+    }
+    if (!response?.ok) throw new Error(response?.error?.code || 'operation_failed');
+    return response.data;
+  }
+  function showError(error) {
+    const key=i18n[model.language][error.message]?error.message:'operation_failed';
+    if(model.modal){model.dialogError=key;renderDialogError();}else toast(key,{},true);
+  }
+  function renderDialogError(){const element=$('dialog-error');if(element){element.textContent=model.dialogError?t(model.dialogError):'';element.classList.toggle('hidden',!model.dialogError);}}
+
+  function applyLanguage() {
+    document.documentElement.lang=model.language==='zh'?'zh-CN':'en';
+    document.querySelectorAll('[data-i18n]').forEach(el=>el.textContent=t(el.dataset.i18n));
+    for(const [attribute,field] of [['placeholder','i18nPlaceholder'],['title','i18nTitle'],['aria-label','i18nAria']]) document.querySelectorAll(`[data-${field.replace(/[A-Z]/g,c=>'-'+c.toLowerCase())}]`).forEach(el=>el.setAttribute(attribute,t(el.dataset[field])));
+    $('lang-zh').setAttribute('aria-pressed',String(model.language==='zh')); $('lang-en').setAttribute('aria-pressed',String(model.language==='en'));
+    document.querySelectorAll('.toast').forEach(el=>el.textContent=t(el.dataset.key,JSON.parse(el.dataset.values)));
+    $('search-results').classList.add('hidden');
+    renderEditor(); renderState(); mapView?.setLanguage(); if(model.modal) renderModal(); if(tutorial.active) renderTutorial();
+  }
+  async function setLanguage(language) { model.language=language; applyLanguage(); try { await api('save_preferences',{language}); } catch(error) { showError(error); } }
+
+  const TUTORIAL_STEPS = [
+    {targets:['.search-field','.layer-switch'], primary:'.search-field'},
+    {targets:['map-focus','#save-track'], primary:'map-focus'},
+    {targets:['.settings','#lock-start'], primary:'.settings'},
+    {targets:['#start-cruise','#mode-detour'], primary:'#start-cruise'},
+    {targets:['#safe-settle','#goal-caption'], primary:'#safe-settle'}
+  ];
+  const tutorial = {active:false,index:0,autoConsidered:false,frames:[],frame:null,observer:null,focus:null,mode:null,scroll:null,placementStep:null};
+  const tutorialRects = [];
+  for(let index=0;index<5;index++) {
+    const hole=document.createElementNS('http://www.w3.org/2000/svg','rect');
+    hole.setAttribute('fill','black');hole.setAttribute('rx','12');hole.setAttribute('class','tutorial-hole');
+    $('tutorial-holes').append(hole);
+    const ring=document.createElementNS('http://www.w3.org/2000/svg','rect');
+    ring.setAttribute('rx','12');ring.setAttribute('class','tutorial-ring');
+    $('tutorial-rings').append(ring);tutorialRects.push({hole,ring});
+  }
+  function shouldAutoStartTutorial(config) {
+    return Boolean(config && Array.isArray(config.track_points) && config.track_points.length<3);
+  }
+  function considerTutorial() {
+    if(tutorial.autoConsidered)return;
+    tutorial.autoConsidered=true;
+    if(shouldAutoStartTutorial(model.config)&&!trackLocked()&&!model.modal)startTutorial();
+  }
+  function tutorialElementRect(element,padding=8) {
+    if(!element || !element.getClientRects().length)return null;
+    const original=element.getBoundingClientRect();
+    let left=Math.max(8,original.left),top=Math.max(8,original.top),right=Math.min(innerWidth-8,original.right),bottom=Math.min(innerHeight-8,original.bottom);
+    for(let parent=element.parentElement;parent;parent=parent.parentElement) {
+      const style=getComputedStyle(parent),rect=parent.getBoundingClientRect();
+      if(/auto|scroll|hidden|clip/.test(style.overflowX)){left=Math.max(left,rect.left);right=Math.min(right,rect.right);}
+      if(/auto|scroll|hidden|clip/.test(style.overflowY)){top=Math.max(top,rect.top);bottom=Math.min(bottom,rect.bottom);}
+    }
+    if(right<=left || bottom<=top)return null;
+    return {left:Math.max(8,left-padding),top:Math.max(8,top-padding),right:Math.min(innerWidth-8,right+padding),bottom:Math.min(innerHeight-8,bottom+padding)};
+  }
+  function tutorialMapRect() {
+    const map=$('map').getBoundingClientRect(),header=document.querySelector('.topbar').getBoundingClientRect();
+    let left=Math.max(16,map.left+16),right=Math.min(innerWidth-16,map.right-16);
+    let top=Math.max(header.bottom+24,map.top+24),bottom=Math.min(map.bottom-64,innerHeight-96);
+    if(innerWidth>980) {
+      left=Math.max(left,document.querySelector('.editor').getBoundingClientRect().right+24);
+      right=Math.min(right,$('session').getBoundingClientRect().left-24);
+    } else bottom=Math.min(bottom,innerHeight*.46);
+    if(right-left<64 || bottom-top<40)return null;
+    const width=Math.min(416,right-left),height=Math.min(300,bottom-top),cx=(left+right)/2,cy=(top+bottom)/2;
+    return {left:cx-width/2,top:cy-height/2,right:cx+width/2,bottom:cy+height/2};
+  }
+  function tutorialTargets() {
+    const targets=[...TUTORIAL_STEPS[tutorial.index].targets];
+    if(tutorial.index===0&&!$('search-results').classList.contains('hidden'))targets.push('#search-results');
+    return targets.map(selector=>({selector,rect:selector==='map-focus'?tutorialMapRect():tutorialElementRect(document.querySelector(selector))})).filter(target=>target.rect);
+  }
+  function setTutorialRect(element,rect) {
+    element.style.x=(rect?.left||0)+'px';element.style.y=(rect?.top||0)+'px';
+    element.style.width=(rect?rect.right-rect.left:0)+'px';element.style.height=(rect?rect.bottom-rect.top:0)+'px';
+    element.style.opacity=rect?'1':'0';
+  }
+  function tutorialOverlap(a,b) {
+    return Math.max(0,Math.min(a.right,b.right)-Math.max(a.left,b.left))*Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top));
+  }
+  function placeTutorialCard(frames) {
+    const card=$('tutorial-card'),width=card.offsetWidth,height=card.offsetHeight,margin=16;
+    const clamp=(value,min,max)=>Math.max(min,Math.min(Math.max(min,max),value));
+    if(innerWidth<=980){card.style.left=Math.round((innerWidth-width)/2)+'px';card.style.top=Math.max(margin,innerHeight-height-margin)+'px';return;}
+    const anchor=frames[0]?.rect||{left:innerWidth/2,right:innerWidth/2,top:104,bottom:104};
+    const candidates=[
+      [anchor.left,anchor.bottom+24],[anchor.right+24,anchor.top],[anchor.left-width-24,anchor.top],
+      [anchor.left,anchor.top-height-24],[innerWidth-width-margin,104],[margin,104],
+      [innerWidth-width-margin,innerHeight-height-margin],[margin,innerHeight-height-margin],
+      [(innerWidth-width)/2,(innerHeight-height)/2]
+    ];
+    // Keep the card in place when search results close or an anchor is dragged.
+    // It moves to a new focus on step changes, rather than chasing the pointer.
+    const sameStep=tutorial.placementStep===tutorial.index;
+    const previous=sameStep?[Number.parseFloat(card.style.left),Number.parseFloat(card.style.top)]:null;
+    if(previous?.every(Number.isFinite))candidates.unshift(previous);
+    const protectedRects=[...frames.map(frame=>frame.rect),tutorialElementRect(document.querySelector('.language-switch')),tutorialElementRect($('tutorial-launch'))].filter(Boolean);
+    let best=null;
+    for(const [x,y] of candidates) {
+      const left=clamp(x,margin,innerWidth-width-margin),top=clamp(y,104,innerHeight-height-margin),rect={left,top,right:left+width,bottom:top+height};
+      const overlap=protectedRects.reduce((sum,target)=>sum+tutorialOverlap(rect,target),0);
+      const distance=Math.hypot(left+width/2-(anchor.left+anchor.right)/2,top+height/2-(anchor.top+anchor.bottom)/2);
+      const movement=previous?.every(Number.isFinite)?Math.hypot(left-previous[0],top-previous[1]):0;
+      const score=overlap*1000+distance+movement*4;
+      if(!best||score<best.score)best={left,top,score};
+    }
+    card.style.left=Math.round(best.left)+'px';card.style.top=Math.round(best.top)+'px';
+    tutorial.placementStep=tutorial.index;
+  }
+  function layoutTutorial() {
+    if(!tutorial.active)return;
+    tutorial.frames=tutorialTargets();
+    const chrome=[document.querySelector('.language-switch'),$('tutorial-launch')].map(element=>tutorialElementRect(element,4));
+    for(let index=0;index<tutorialRects.length;index++) {
+      // Three teaching cutouts plus the language and replay controls.
+      const rect=index<3?tutorial.frames[index]?.rect:chrome[index-3];
+      setTutorialRect(tutorialRects[index].hole,rect);
+      setTutorialRect(tutorialRects[index].ring,index<3?rect:null);
+    }
+    placeTutorialCard(tutorial.frames);
+  }
+  function scheduleTutorialLayout() {
+    if(!tutorial.active||tutorial.frame!==null)return;
+    tutorial.frame=requestAnimationFrame(()=>{tutorial.frame=null;layoutTutorial();});
+  }
+  function renderTutorial() {
+    if(!tutorial.active)return;
+    const number=tutorial.index+1;
+    $('tutorial-title').textContent=t('tutorial'+number+'Title');
+    $('tutorial-count').textContent=t('tutorialProgress',{n:number,total:TUTORIAL_STEPS.length});
+    const paragraphs=t('tutorial'+number+'Body').split('\n\n').map((text,index)=>{const p=document.createElement('p');p.textContent=text;if(number===5&&index===1)p.className='tutorial-golden';return p;});
+    $('tutorial-body').replaceChildren(...paragraphs);
+    $('tutorial-previous').disabled=tutorial.index===0;
+    $('tutorial-next').textContent=t(tutorial.index===TUTORIAL_STEPS.length-1?'tutorialFinish':'tutorialNext');
+    $('tutorial-dots').innerHTML=TUTORIAL_STEPS.map((_,index)=>`<span${index===tutorial.index?' class="current"':''}></span>`).join('');
+    scheduleTutorialLayout();
+  }
+  function showTutorialStep(index) {
+    tutorial.index=Math.max(0,Math.min(TUTORIAL_STEPS.length-1,index));
+    document.body.dataset.tutorialStep=String(tutorial.index+1);
+    if(tutorial.index===1&&model.mode!=='track')switchMode('track');
+    renderTutorial();$('tutorial-content').scrollTop=0;
+    revealTutorialPrimary();
+    layoutTutorial();scheduleTutorialLayout();
+    $('tutorial-next').focus({preventScroll:true});
+  }
+  function revealTutorialPrimary() {
+    if(!tutorial.active)return;
+    const selector=TUTORIAL_STEPS[tutorial.index].primary;
+    if(innerWidth<=980) {
+      if(tutorial.index<2)window.scrollTo({top:0,behavior:'instant'});
+      else {document.querySelector(selector)?.scrollIntoView({block:'start',behavior:'instant'});window.scrollBy({top:-144,behavior:'instant'});}
+    } else if(selector!=='map-focus')document.querySelector(selector)?.scrollIntoView({block:'nearest',behavior:'instant'});
+  }
+  function startTutorial() {
+    if(model.busy)return;
+    if(model.modal)closeModal();
+    if(!tutorial.active) {
+      tutorial.focus=document.activeElement;tutorial.mode=model.mode;
+      tutorial.scroll={x:scrollX,y:scrollY,session:$('session').scrollTop,editor:document.querySelector('.editor-body').scrollTop};
+    }
+    tutorial.active=true;tutorial.autoConsidered=true;tutorial.placementStep=null;$('tutorial').hidden=false;
+    $('tutorial-launch').setAttribute('aria-expanded','true');
+    tutorial.observer?.disconnect();
+    if(window.ResizeObserver) {
+      tutorial.observer=new ResizeObserver(scheduleTutorialLayout);
+      for(const element of [$('tutorial-card'),$('search-results'),$('session'),document.querySelector('.editor-body')])tutorial.observer.observe(element);
+    }
+    showTutorialStep(0);
+  }
+  function closeTutorial({restoreFocus=true,restoreScroll=true}={}) {
+    if(!tutorial.active)return;
+    tutorial.active=false;tutorial.frames=[];
+    tutorial.observer?.disconnect();tutorial.observer=null;
+    if(tutorial.frame!==null){cancelAnimationFrame(tutorial.frame);tutorial.frame=null;}
+    $('tutorial').hidden=true;delete document.body.dataset.tutorialStep;
+    $('tutorial-launch').setAttribute('aria-expanded','false');
+    if(tutorial.mode==='detour'&&model.mode==='track')switchMode('detour');
+    if(restoreScroll&&tutorial.scroll){window.scrollTo(tutorial.scroll.x,tutorial.scroll.y);$('session').scrollTop=tutorial.scroll.session;document.querySelector('.editor-body').scrollTop=tutorial.scroll.editor;}
+    if(restoreFocus){const focus=tutorial.focus?.isConnected?tutorial.focus:$('tutorial-launch');focus.focus({preventScroll:true});}
+  }
+  function tutorialAllows(element,point=null) {
+    if(!element?.closest)return false;
+    if(element.closest('#tutorial-card,#tutorial-launch,.language-switch'))return true;
+    if(tutorial.index===0&&element.closest('#search-results'))return true;
+    if(TUTORIAL_STEPS[tutorial.index].targets.some(selector=>selector!=='map-focus'&&element.closest(selector)))return true;
+    if(tutorial.index===1&&element.closest('#map')) {
+      const rect=tutorial.frames.find(frame=>frame.selector==='map-focus')?.rect,bounds=element.getBoundingClientRect();
+      const x=point?.clientX??(bounds.left+bounds.right)/2,y=point?.clientY??(bounds.top+bounds.bottom)/2;
+      return Boolean(rect&&x>=rect.left&&x<=rect.right&&y>=rect.top&&y<=rect.bottom);
+    }
+    return false;
+  }
+  function guardTutorialPointer(event) {
+    if(tutorial.active&&!model.modal&&!tutorialAllows(event.target,event.type==='click'&&event.detail===0?null:event)) {
+      event.preventDefault();event.stopImmediatePropagation();
+    }
+  }
+  for(const name of ['pointerdown','click','dblclick'])document.addEventListener(name,guardTutorialPointer,true);
+  document.addEventListener('focusin',event=>{if(tutorial.active&&!model.modal&&!tutorialAllows(event.target))$('tutorial-next').focus({preventScroll:true});});
+  document.addEventListener('keydown',event=>{
+    if(!tutorial.active||model.modal)return;
+    if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();closeTutorial();return;}
+    if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();event.stopImmediatePropagation();if(tutorial.index===0)$('search').focus();return;}
+    if(event.key==='Tab') {
+      const controls=[...document.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),[tabindex="0"]')].filter(element=>element.getClientRects().length&&tutorialAllows(element));
+      const index=controls.indexOf(document.activeElement),next=event.shiftKey?(index<=0?controls.length-1:index-1):(index+1)%controls.length;
+      event.preventDefault();event.stopImmediatePropagation();controls[next]?.focus();return;
+    }
+    if(event.target.closest('#tutorial-card')&&['ArrowLeft','ArrowRight'].includes(event.key)) {
+      event.preventDefault();event.stopImmediatePropagation();
+      if(event.key==='ArrowLeft')showTutorialStep(tutorial.index-1);
+      else if(tutorial.index<TUTORIAL_STEPS.length-1)showTutorialStep(tutorial.index+1);
+    }
+  },true);
+  $('tutorial-launch').addEventListener('click',startTutorial);
+  $('tutorial-dismiss').addEventListener('click',()=>closeTutorial());
+  $('tutorial-previous').addEventListener('click',()=>showTutorialStep(tutorial.index-1));
+  $('tutorial-next').addEventListener('click',()=>{if(tutorial.index===TUTORIAL_STEPS.length-1)closeTutorial();else showTutorialStep(tutorial.index+1);});
+  function resizeTutorial(){tutorial.placementStep=null;revealTutorialPrimary();scheduleTutorialLayout();}
+  window.addEventListener('resize',resizeTutorial,{passive:true});
+  window.addEventListener('scroll',scheduleTutorialLayout,{capture:true,passive:true});
+  window.visualViewport?.addEventListener('resize',resizeTutorial,{passive:true});
+
+  // Complete metric map adapter. Leaflet is primary; the native canvas fallback
+  // retains editing and exact GCJ-02 navigation if the CDN cannot load.
+  class MapView {
+    constructor() {
+      this.center=[31.025,121.434]; this.zoom=17; this.runner=null; this.shapes={track:[],draft:[],anchors:[],active:[],trace:[]};this.traceWorld=[];this.traceZoom=null; this.drag=null; this.tiles=new Map(); this.tileFailures=0; this.leaflet=Boolean(window.L); this.lang='zh';
+      if(this.leaflet) this.initLeaflet(); else this.initCanvas();
+      $('map').addEventListener('contextmenu',event=>event.preventDefault());
+    }
+    initLeaflet() {
+      $('fallback-map').remove(); this.map=L.map('map',{preferCanvas:true,doubleClickZoom:false,zoomControl:false,attributionControl:true,boxZoom:false}).setView(this.center,this.zoom);
+      this.map.getContainer().style.cursor='crosshair'; this.map.on('click',event=>addPoint(event.latlng.lat,event.latlng.lng));
+      this.map.on('moveend',()=>{ this.center=[this.map.getCenter().lat,this.map.getCenter().lng]; this.zoom=this.map.getZoom(); saveView(); });
+      this.baseGroup=L.layerGroup().addTo(this.map); this.pathGroup=L.layerGroup().addTo(this.map); this.markerGroup=L.layerGroup().addTo(this.map); this.arrowGroup=L.layerGroup().addTo(this.map);
+      this.map.createPane('piggy-history');this.map.getPane('piggy-history').style.zIndex='410';this.map.getPane('piggy-history').style.pointerEvents='none';
+      this.historyLine=L.polyline([],{pane:'piggy-history',renderer:L.canvas({pane:'piggy-history'}),color:'#9bd4ff',weight:1.5,opacity:.8,smoothFactor:0,interactive:false}).addTo(this.map);
+      this.positionMarker=L.marker(this.center,{interactive:false,zIndexOffset:1000,icon:L.divIcon({className:'',html:'<div class="live-dot"></div>',iconSize:[14,14],iconAnchor:[7,7]})});
+      this.arrows=[]; this.setLayer('hybrid');
+    }
+    initCanvas() {
+      this.canvas=$('fallback-map'); this.ctx=this.canvas.getContext('2d');
+      const resize=()=>{ const rect=$('map').getBoundingClientRect(); const dpr=window.devicePixelRatio||1; this.width=rect.width; this.height=rect.height; this.canvas.width=rect.width*dpr; this.canvas.height=rect.height*dpr; this.ctx.setTransform(dpr,0,0,dpr,0,0); this.drawCanvas(); };
+      new ResizeObserver(resize).observe($('map')); resize(); this.showNotice('mapUnavailable');
+      this.canvas.addEventListener('pointerdown',event=>{ if(event.button!==0)return; const p=this.local(event); const hit=this.shapes.anchors.findIndex(anchor=>{const a=this.toScreen([anchor.lat,anchor.lon]);return Math.hypot(a[0]-p[0],a[1]-p[1])<16;}); if(hit>=0&&!this.editLocked()){ remember(); this.drag={kind:'anchor',index:hit,start:p,moved:false}; model.selected=hit; } else this.drag={kind:'pan',start:p,center:this.project(this.center),moved:false}; this.canvas.setPointerCapture(event.pointerId); });
+      this.canvas.addEventListener('pointermove',event=>{ if(!this.drag)return; const p=this.local(event); if(Math.hypot(p[0]-this.drag.start[0],p[1]-this.drag.start[1])>3)this.drag.moved=true; if(this.drag.kind==='anchor'){ const ll=this.fromScreen(p); currentPoints()[this.drag.index].lat=ll[0];currentPoints()[this.drag.index].lon=ll[1]; edited(false); } else { this.center=this.unproject([this.drag.center[0]-(p[0]-this.drag.start[0]),this.drag.center[1]-(p[1]-this.drag.start[1])]);this.drawCanvas(); } });
+      const finish=event=>{if(!this.drag)return; const drag=this.drag;this.drag=null; if(drag.kind==='pan'&&!drag.moved){const ll=this.fromScreen(this.local(event));addPoint(...ll);} else if(drag.kind==='anchor')edited();else saveView();};
+      this.canvas.addEventListener('pointerup',finish);this.canvas.addEventListener('pointercancel',()=>{this.drag=null;});
+      this.canvas.addEventListener('wheel',event=>{event.preventDefault();this.changeZoom(event.deltaY<0?1:-1);},{passive:false});
+      this.canvas.addEventListener('dblclick',event=>event.preventDefault());
+    }
+    local(event) { const rect=this.canvas.getBoundingClientRect();return[event.clientX-rect.left,event.clientY-rect.top]; }
+    project(ll) { const size=256*2**this.zoom,lat=Math.max(-85,Math.min(85,ll[0]))*Math.PI/180; return [(ll[1]+180)/360*size,(1-Math.log(Math.tan(lat)+1/Math.cos(lat))/Math.PI)/2*size]; }
+    unproject(p) { const size=256*2**this.zoom;return [Math.atan(Math.sinh(Math.PI*(1-2*p[1]/size)))*180/Math.PI,p[0]/size*360-180]; }
+    toScreen(ll) {const a=this.project(ll),c=this.project(this.center);return [a[0]-c[0]+this.width/2,a[1]-c[1]+this.height/2];}
+    fromScreen(p) {const c=this.project(this.center);return this.unproject([p[0]+c[0]-this.width/2,p[1]+c[1]-this.height/2]);}
+    editLocked() { return model.mode==='track'&&trackLocked(); }
+    showNotice(key) { this.notice=key; $('map-notice-text').textContent=t(key); $('map-notice').classList.remove('hidden'); }
+    setLanguage() { this.lang=model.language; if(this.notice)$('map-notice-text').textContent=t(this.notice); if(this.leaflet){this.map.attributionControl.setPrefix(false);this.setLayer(model.layer);this.render();}else this.drawCanvas(); }
+    tileURLs(layer,x,y,z) { const host=1+((x+y)%4);const road=`https://webst0${host}.is.autonavi.com/appmaptile?style=8&lang=${this.lang==='en'?'en':'zh_cn'}&x=${x}&y=${y}&z=${z}`;return layer==='hybrid'?[`https://webst0${host}.is.autonavi.com/appmaptile?style=6&x=${x}&y=${y}&z=${z}`,road]:[`https://webrd0${host}.is.autonavi.com/appmaptile?style=8&lang=${this.lang==='en'?'en':'zh_cn'}&x=${x}&y=${y}&z=${z}`]; }
+    setLayer(layer) {
+      model.layer=layer;this.tiles.clear();this.tileFailures=0;
+      $('layer-hybrid').setAttribute('aria-pressed',String(layer==='hybrid'));$('layer-street').setAttribute('aria-pressed',String(layer==='street'));
+      if(this.leaflet){this.baseGroup.clearLayers();const options={subdomains:['1','2','3','4'],minZoom:3,maxZoom:20,maxNativeZoom:18,referrerPolicy:'no-referrer',attribution:this.lang==='zh'?'© 高德地图':'© AMap'};
+        const add=(url,attribution)=>{const tile=L.tileLayer(url,{...options,attribution}); tile.on('tileerror',()=>{if(++this.tileFailures===6)this.showNotice('tilesUnavailable');});this.baseGroup.addLayer(tile);};
+        if(layer==='hybrid'){add('https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}',options.attribution);add(`https://webst0{s}.is.autonavi.com/appmaptile?style=8&lang=${this.lang==='en'?'en':'zh_cn'}&x={x}&y={y}&z={z}`,'');}
+        else add(`https://webrd0{s}.is.autonavi.com/appmaptile?style=8&lang=${this.lang==='en'?'en':'zh_cn'}&x={x}&y={y}&z={z}`,options.attribution);
+      }else this.drawCanvas();
+    }
+    setView(center,zoom=17) { this.center=center;this.zoom=Math.max(3,Math.min(this.leaflet?20:18,zoom));if(this.leaflet)this.map.setView(center,this.zoom,{animate:false});else{this.drawCanvas();saveView();} }
+    changeZoom(delta) { this.setView(this.center,this.zoom+delta); }
+    fit(points) {if(!points.length){this.setView(this.center);return;}const latlng=points.map(p=>Array.isArray(p)?p:[p.lat,p.lon]);if(this.leaflet){const padding=window.innerWidth>800?[348,160]:[32,80];this.map.fitBounds(latlng,{paddingTopLeft:padding,paddingBottomRight:window.innerWidth>800?[348,140]:[32,80],maxZoom:19,animate:false});}else{const minLat=Math.min(...latlng.map(p=>p[0])),maxLat=Math.max(...latlng.map(p=>p[0])),minLon=Math.min(...latlng.map(p=>p[1])),maxLon=Math.max(...latlng.map(p=>p[1]));this.center=[(minLat+maxLat)/2,(minLon+maxLon)/2];this.zoom=19;while(this.zoom>3){const a=this.project([minLat,minLon]),b=this.project([maxLat,maxLon]);if(Math.abs(a[0]-b[0])<Math.max(180,this.width-720)&&Math.abs(a[1]-b[1])<this.height-240)break;this.zoom--;}this.drawCanvas();} }
+    setTrace(points) { this.shapes.trace=points;if(this.leaflet)this.historyLine.setLatLngs(points);else{this.traceZoom=null;this.drawCanvas();} }
+    setPosition(position) { this.runner=position;if(this.leaflet){if(position){this.positionMarker.setLatLng(position);if(!this.map.hasLayer(this.positionMarker))this.positionMarker.addTo(this.map);}else this.positionMarker.remove();}else this.drawCanvas(); }
+    render(keepMarkers=false) {
+      this.shapes={trace:model.trace.map(p=>[p.lat,p.lon]),track:model.curve.length?model.curve:model.track.map(p=>[p.lat,p.lon]),draft:model.draft.map(p=>[p.lat,p.lon]),active:model.activePath,anchors:currentPoints(),targets:(model.state?.detour_pending||model.state?.state==='CRUISING_DETOUR')?(model.state?.active_detour||[]).filter(p=>p.is_target):[]};
+      if(!this.leaflet){this.drawCanvas();return;}
+      this.pathGroup.clearLayers();if(!keepMarkers)this.markerGroup.clearLayers();
+      const loop=this.shapes.track;if(loop.length>1){const closed=loop.length>=3?[...loop,loop[0]]:loop;L.polyline(closed,{color:'#091c2f',weight:8,opacity:.45,interactive:false}).addTo(this.pathGroup);L.polyline(closed,{color:'#6ab9ff',weight:3,opacity:1,interactive:false}).addTo(this.pathGroup);}
+      if(this.shapes.active.length>1)L.polyline(this.shapes.active,{color:'#e9c46e',weight:3,opacity:.85,interactive:false}).addTo(this.pathGroup);
+      if(this.shapes.draft.length>1)L.polyline(this.shapes.draft,{color:'#e9c46e',weight:3,dashArray:'8 8',opacity:.95,interactive:false}).addTo(this.pathGroup);
+      this.shapes.targets.forEach((p,i)=>{L.circle([p.lat,p.lon],{radius:15,color:'#81d7aa',weight:1,fillColor:'#81d7aa',fillOpacity:.14,interactive:false}).addTo(this.pathGroup);if(!keepMarkers)L.marker([p.lat,p.lon],{interactive:false,icon:L.divIcon({className:'',html:`<div class="anchor target">${checkpointSymbol(i+1)}</div>`,iconSize:[28,28],iconAnchor:[14,14]})}).addTo(this.markerGroup);});
+      let targetIndex=0;
+      this.shapes.anchors.forEach((p,index)=>{const target=model.mode==='detour'&&p.is_target;if(target){targetIndex++;L.circle([p.lat,p.lon],{radius:15,color:'#81d7aa',weight:1,fillColor:'#81d7aa',fillOpacity:.14,interactive:false}).addTo(this.pathGroup);}if(keepMarkers)return;const size=target?28:16;const html=target?`<div class="anchor target">${checkpointSymbol(targetIndex)}</div>`:`<div class="anchor${model.mode==='detour'?' draft':''}"></div>`;const marker=L.marker([p.lat,p.lon],{draggable:!this.editLocked(),icon:L.divIcon({className:'',html,iconSize:[size,size],iconAnchor:[size/2,size/2]}),keyboard:true,title:target?t('targetLabel',{n:targetIndex}):t('anchorLabel',{n:index+1})}).addTo(this.markerGroup);marker.on('click',event=>{L.DomEvent.stopPropagation(event);model.selected=index;renderEditor();});marker.on('dragstart',()=>{this.draggingLeaflet=true;remember();});marker.on('drag',()=>{const ll=marker.getLatLng();p.lat=ll.lat;p.lon=ll.lng;edited(false,true);});marker.on('dragend',()=>{this.draggingLeaflet=false;model.selected=index;edited();});});
+      this.updateArrows(performance.now());
+    }
+    updateArrows(now) {
+      const points=this.shapes.track;
+      if(!this.leaflet)return;
+      const count=points.length>=3?Math.min(12,Math.max(3,Math.floor(points.length/35))):0;
+      while(this.arrows.length>count)this.arrowGroup.removeLayer(this.arrows.pop());
+      while(this.arrows.length<count)this.arrows.push(L.marker(this.center,{interactive:false,icon:L.divIcon({className:'',html:'<div class="route-arrow">›</div>',iconSize:[24,24],iconAnchor:[12,12]})}).addTo(this.arrowGroup));
+      this.arrows.forEach((arrow,i)=>{const offset=(i/count+(now/70000)%1)%1,idx=Math.floor(offset*points.length),a=points[idx],b=points[(idx+2)%points.length];arrow.setLatLng(a);const el=arrow.getElement()?.firstElementChild;if(el)el.style.transform=`rotate(${bearing(a,b)-90}deg)`;});
+    }
+    drawCanvas() {
+      if(!this.ctx||!this.width)return;const c=this.ctx,w=this.width,h=this.height;c.clearRect(0,0,w,h);c.fillStyle='#272727';c.fillRect(0,0,w,h);
+      const centre=this.project(this.center),left=centre[0]-w/2,top=centre[1]-h/2;const minX=Math.floor(left/256),maxX=Math.floor((left+w)/256),minY=Math.floor(top/256),maxY=Math.floor((top+h)/256),limit=2**this.zoom;
+      for(let y=minY;y<=maxY;y++)for(let x=minX;x<=maxX;x++){if(x<0||y<0||x>=limit||y>=limit)continue;const dx=x*256-left,dy=y*256-top;c.strokeStyle='rgba(255,255,255,.035)';c.strokeRect(dx,dy,256,256);for(const url of this.tileURLs(model.layer,x,y,this.zoom)){let image=this.tiles.get(url);if(!image){image=new Image();image.referrerPolicy='no-referrer';image.onload=()=>this.drawCanvas();image.onerror=()=>{if(++this.tileFailures===6)this.showNotice('tilesUnavailable');};image.src=url;this.tiles.set(url,image);}if(image.complete&&image.naturalWidth)c.drawImage(image,dx,dy,256,256);}}
+      if(this.tiles.size>180){const last=[...this.tiles.entries()].slice(-100);this.tiles=new Map(last);}
+      const path=(points,color,dashed=false,closed=false)=>{if(points.length<2)return;c.beginPath();points.forEach((ll,i)=>{const p=this.toScreen(ll);i?c.lineTo(...p):c.moveTo(...p);});if(closed)c.closePath();c.strokeStyle=color;c.lineWidth=3;c.lineCap='round';c.lineJoin='round';c.setLineDash(dashed?[8,8]:[]);c.stroke();c.setLineDash([]);};
+      path(this.shapes.track,'#6ab9ff',false,this.shapes.track.length>=3);
+      if(this.shapes.trace?.length>1){if(this.traceZoom!==this.zoom){this.traceWorld=this.shapes.trace.map(ll=>this.project(ll));this.traceZoom=this.zoom;}c.beginPath();this.traceWorld.forEach((p,i)=>{const x=p[0]-left,y=p[1]-top;i?c.lineTo(x,y):c.moveTo(x,y);});c.strokeStyle='#9bd4ff';c.lineWidth=1.5;c.lineJoin='round';c.stroke();}
+      path(this.shapes.active,'#e9c46e');path(this.shapes.draft,'#e9c46e',true);
+      if(this.shapes.track.length>=3){const count=8,points=this.shapes.track;for(let i=0;i<count;i++){const idx=Math.floor(((i/count+performance.now()/70000)%1)*points.length),a=points[idx],b=points[(idx+2)%points.length],p=this.toScreen(a);c.save();c.translate(...p);c.rotate((bearing(a,b)-90)*Math.PI/180);c.strokeStyle='#e9f6ff';c.lineWidth=2;c.beginPath();c.moveTo(-3,-4);c.lineTo(3,0);c.lineTo(-3,4);c.stroke();c.restore();}}
+      let targetIndex=0;const anchors=[...(this.shapes.targets||[]).map((p,i)=>({...p,active:true,targetNumber:i+1})),...this.shapes.anchors];for(const anchor of anchors){const p=this.toScreen([anchor.lat,anchor.lon]),target=anchor.active||model.mode==='detour'&&anchor.is_target;if(target){if(!anchor.active)targetIndex++;const radius=15/(Math.cos(anchor.lat*Math.PI/180)*2*Math.PI*6378137/(256*2**this.zoom));c.beginPath();c.arc(...p,radius,0,2*Math.PI);c.fillStyle='rgba(129,215,170,.14)';c.fill();c.strokeStyle='#81d7aa';c.lineWidth=1;c.stroke();}c.beginPath();c.arc(...p,target?14:7,0,2*Math.PI);c.fillStyle=target?'#2c5c46':'#fff';c.fill();c.strokeStyle=target?'#81d7aa':model.mode==='track'?'#3499ff':'#e9c46e';c.lineWidth=3;c.stroke();if(target){c.fillStyle='#eafff1';c.font='18px '+getComputedStyle(document.body).fontFamily;c.textAlign='center';c.textBaseline='middle';c.fillText(checkpointSymbol(anchor.active?anchor.targetNumber:targetIndex),...p);}}
+      if(this.runner){const p=this.toScreen(this.runner);c.beginPath();c.arc(...p,14,0,2*Math.PI);c.fillStyle='rgba(39,143,255,.18)';c.fill();c.beginPath();c.arc(...p,6,0,2*Math.PI);c.fillStyle='#278fff';c.fill();c.strokeStyle='#fff';c.lineWidth=3;c.stroke();}
+      c.fillStyle='#b8b8bc';c.font='12px '+getComputedStyle(document.body).fontFamily;c.textAlign='right';c.textBaseline='bottom';c.fillText(this.lang==='zh'?'© 高德地图':'© AMap',w-12,h-4);
+    }
+  }
+  function bearing(a,b) {const rad=Math.PI/180,p1=a[0]*rad,p2=b[0]*rad,dl=(b[1]-a[1])*rad;return (Math.atan2(Math.sin(dl)*Math.cos(p2),Math.cos(p1)*Math.sin(p2)-Math.sin(p1)*Math.cos(p2)*Math.cos(dl))/rad+360)%360;}
+  function checkpointSymbol(number) { return number<=20?String.fromCodePoint(0x2460+number-1):String(number); }
+  let mapView=null,previewTimer=null,previewSequence=0,saveTimer=null,viewTimer=null,lastArrowFrame=0,motion=null;
+  function remember() {const history=model.history[model.mode];history.push(clone(currentPoints()));if(history.length>50)history.shift();}
+  function addPoint(lat,lon) {if(model.mode==='track'&&trackLocked()){toast('editLocked');return;}if(currentPoints().length>=1000){toast('invalid_points',{},true);return;}remember();currentPoints().push({lat,lon,is_target:false});model.selected=currentPoints().length-1;edited();}
+  function edited(schedule=true,keepMarkers=false) {renderEditor();if(!keepMarkers)mapView.render();if(model.mode==='track'){clearTimeout(saveTimer);clearTimeout(previewTimer);const seq=++previewSequence;if(model.track.length>=3){previewTimer=setTimeout(()=>previewTrack(seq),schedule?100:160);}else{model.curve=[];model.curveLength=0;if(!keepMarkers)mapView.render();if(schedule)scheduleTrackSave();}}}
+  async function previewTrack(sequence=++previewSequence) {try{const result=await api('preview_track',model.track);if(sequence!==previewSequence)return;model.curve=result.points;model.curveLength=result.length_m;renderEditor();mapView.render(Boolean(mapView.draggingLeaflet));scheduleTrackSave();}catch(error){if(sequence!==previewSequence)return;model.curve=[];model.curveLength=0;renderEditor();mapView.render(Boolean(mapView.draggingLeaflet));if(error.message!=='invalid_track'&&error.message!=='connectionLost')showError(error);}}
+  function scheduleTrackSave() {clearTimeout(saveTimer);if(trackLocked()||!model.connected||model.track.length>0&&(model.track.length<3||!model.curveLength))return;saveTimer=setTimeout(async()=>{if(trackLocked())return;try{model.saving=true;renderEditor();await api('save_track',model.track);model.saving=false;renderEditor();}catch(error){model.saving=false;renderEditor();showError(error);}},700);}
+  function saveView(){clearTimeout(viewTimer);viewTimer=setTimeout(()=>{if(model.connected)api('save_preferences',{map_center:mapView.center,map_zoom:mapView.zoom,layer:model.layer}).catch(showError);},700);}
+  let lastEditorRender='';
+  function renderEditor() {
+    const signature=JSON.stringify([model.language,model.mode,currentPoints(),model.selected,trackLocked(),model.curveLength,model.saving,model.busy,model.connected,model.history[model.mode].length,model.state?.state,model.state?.detour_pending,model.state?.stop_pending,model.state?.pause_phase]);
+    if(signature===lastEditorRender)return;lastEditorRender=signature;
+    const track=model.mode==='track',points=currentPoints(),locked=track&&trackLocked();
+    $('track-width-wrap').classList.toggle('hidden',!track);
+    $('mode-track').setAttribute('aria-selected',String(track));$('mode-detour').setAttribute('aria-selected',String(!track));
+    $('editor-instruction').textContent=t(track?'trackInstruction':'detourInstruction');$('editor-dot').className='dot '+(track?'blue':'gold');
+    $('editor-status').textContent=t(track?(model.saving?'saving':model.curveLength?'smoothReady':'editing'):'draftStatus',{n:Math.round(model.curveLength)});
+    $('node-count').textContent=t('nodeCount',{n:points.length});
+    $('save-track').classList.toggle('hidden',!track);$('draft-tools').classList.toggle('hidden',track);$('editor-lock').classList.toggle('hidden',!locked);
+    $('undo').disabled=locked||!model.history[model.mode].length;$('clear').disabled=locked||!points.length;$('save-track').disabled=locked||points.length<3||!model.curveLength||model.busy||!model.connected;
+    const cruising=model.state?.state==='CRUISING_LOOP';$('activate-detour').disabled=!cruising||model.state?.detour_pending||model.state?.stop_pending||!['running',undefined].includes(model.state?.pause_phase)||!points.some(p=>p.is_target)||model.busy;
+    $('target-toggle-wrap').classList.toggle('hidden',track||model.selected<0||model.selected>=points.length);
+    $('target-toggle').checked=Boolean(points[model.selected]?.is_target);
+    const list=$('vertex-list'),scroll=list.scrollTop;
+    if(!points.length) list.innerHTML=`<div class="vertex-empty">${icon(track?'route':'pin')}<p>${esc(t(track?'trackEmpty':'draftEmpty'))}</p></div>`;
+    else {let target=0;list.innerHTML=points.map((p,index)=>{const isTarget=!track&&p.is_target;if(isTarget)target++;return `<div class="vertex-row${model.selected===index?' selected':''}${isTarget?' target':''}" role="listitem" data-index="${index}" tabindex="0" aria-label="${esc(t(isTarget?'targetLabel':track?'anchorLabel':'guideLabel',{n:isTarget?target:index+1}))}"><span class="vertex-index">${isTarget?checkpointSymbol(target):String(index+1).padStart(2,'0')}</span><span class="vertex-coord">${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}</span><button class="icon-button" data-remove="${index}" aria-label="${esc(t('removePoint'))}" ${locked?'disabled':''}>${icon('close','small-icon')}</button></div>`;}).join('');}
+    list.scrollTop=scroll;scheduleTutorialLayout();
+  }
+  function switchMode(mode){model.mode=mode;model.selected=-1;renderEditor();mapView.render();if(mode==='detour'&&model.state?.state==='CRUISING_LOOP')toast('modeSwitched');}
+  let lastPositionKey='',announcedReady=false,systemNotices=new Set();
+  function acceptState(state) {
+    if(!Number.isSafeInteger(state?.seq)||state.seq<model.stateSeq)return false;
+    model.stateSeq=state.seq;
+    const priorActive=model.state?.session_active;model.state=state;model.connected=true;
+    if(priorActive!==state.session_active)mapView.render();
+    const p=state.gcj_position;
+    if(p){const key=`${p.lat},${p.lon}`;if(key!==lastPositionKey){const now=performance.now(),from=motion?animatedPosition(now):[p.lat,p.lon];motion={from,to:[p.lat,p.lon],at:now,duration:state.state==='LOCKED_START'?0:950};lastPositionKey=key;}}
+    else if(motion){motion=null;mapView.setPosition(null);}
+    if(state.state==='LOCKED_START'&&state.start_phase==='ready'&&!announcedReady){announcedReady=true;toast('openPhone');}
+    if(state.state!=='LOCKED_START')announcedReady=false;
+    if(state.device.low_battery&&!systemNotices.has('batteryLow')){systemNotices.add('batteryLow');toast('batteryLow',{n:Math.round(state.device.battery_percent)},true);}
+    if(state.clock.status==='skew'&&!systemNotices.has('clockSkew')){systemNotices.add('clockSkew');toast('clockSkew',{n:Math.abs(state.clock.offset_s).toFixed(1)},true);}
+    for(const [condition,key] of [[state.system.driver==='missing','driverMissing'],[state.system.driver==='stopped','driverStopped'],[state.system.awake==='failed','awakeIssue'],[Boolean(state.config_issue),state.config_issue]])if(condition&&!systemNotices.has(key)){systemNotices.add(key);toast(key,{},true);}
+    if(!state.detour_pending&&state.state!=='CRUISING_DETOUR'&&model.activePath.length){model.activePath=[];mapView.render();}
+    if(state.last_error==='detour_crosses_infield'&&!systemNotices.has(state.session_id+state.last_error)){systemNotices.add(state.session_id+state.last_error);toast(state.last_error,{},true);}
+    renderState();renderEditor();syncTrace();if(model.modal==='checklist')updateChecklist();return true;
+  }
+  function renderState() {
+    const s=model.state;if(!s)return;
+    $('recovery-panel').classList.toggle('hidden',!s.recovery_required);
+    $('recovery-message').textContent=t(s.recovery_invalid?'recovery_invalid':s.recovery_sandbox?'recovery_sandbox':'recoveryNotice');
+    $('recover-previous').textContent=t(s.recovering?'recoveringLocation':'recoverPreviousLocation');
+    $('recover-previous').disabled=model.busy||!model.connected||s.recovering||s.recovery_invalid||s.recovery_sandbox;
+    const phase=s.pause_phase||'running';
+    const active=s.session_active,connected=s.device.mode==='CONNECTED'&&!s.device.speed_fuse_tripped,cruising=['CRUISING_LOOP','CRUISING_DETOUR'].includes(s.state),locked=s.state==='LOCKED_START';
+    const startLabel={injecting:'start_injecting',countdown:'countdown',ready:'cruiseReady',interrupted:'state_LOCKED_START'}[s.start_phase];
+    const startReady=locked&&s.start_phase==='ready';
+    let badge=s.restore_dispatched?'restored':connected?(active?'connected':'deviceReady'):['CONNECTING','RECONNECTING'].includes(s.device.mode)?'deviceConnecting':'sandbox';
+    $('device-label').textContent=t(s.device.speed_fuse_tripped?'fuseBlocked':badge);$('device-badge').classList.toggle('connected',connected);$('device-dot').className='dot'+(connected?' green':'');
+    $('state-caption').textContent=t(!active&&s.state==='SAFE_STOPPED'?'goalEnded':s.target_walking&&phase==='WALKING_REST'?'targetWalking':s.finishing?'finishing':s.engine_issue&&active?'engineStopped':active&&cruising&&phase!=='running'?({slowing:'restSlowing',WALKING_REST:'restResting',resuming:'restResuming'}[phase]):'state_'+s.state);
+    $('distance').textContent=(s.distance_m/1000).toFixed(2);$('target-distance').textContent=active||s.state==='SAFE_STOPPED'?(s.target_m/1000).toFixed(2):'—';
+    const failed=Boolean(s.session_active&&s.engine_issue),achieved=s.distance_m>=s.target_m-1e-5&&s.elapsed_s>0;$('progress-fill').style.width=active||s.elapsed_s?`${Math.min(100,s.distance_m/s.target_m*100)}%`:'0%';$('progress').classList.toggle('achieved',achieved);$('goal-caption').classList.toggle('achieved',achieved);$('goal-text').textContent=t(!active&&s.state==='SAFE_STOPPED'?'goalEnded':failed?'goalFailed':achieved?(s.state==='SAFE_STOPPED'?'goalHeld':'goalReached'):active?'goalRunning':s.elapsed_s>0?'goalEnded':'goalBefore',{n:(s.target_m/1000).toFixed(2)});
+    const pace=s.speed_mps>0?Math.round(1000/s.speed_mps):null;$('pace').textContent=pace?`${Math.floor(pace/60)}′${String(pace%60).padStart(2,'0')}″`:'—';
+    const seconds=Math.floor(s.elapsed_s),hours=Math.floor(seconds/3600);$('elapsed').textContent=(hours?String(hours).padStart(2,'0')+':':'')+String(Math.floor(seconds/60)%60).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0');$('stride').textContent=s.speed_mps>0?s.stride_estimate_m.toFixed(2):'—';$('stride').title=t('helpStride');$('laps').textContent=s.laps;
+    $('current-lap').textContent=s.current_lap?t('lapNumber',{n:s.current_lap}):'—';
+    $('previous-lap').textContent=s.last_lap?t('previousLapDetail',{duration:formatDuration(s.last_lap.duration_s),pace:formatPace(s.last_lap.pace_s_per_km)}):'—';
+    $('gcj-coordinate').textContent=formatCoordinate(s.gcj_position);$('wgs-coordinate').textContent=formatCoordinate(s.position);
+    $('profile').disabled=active||model.busy;$('target-km').disabled=active||model.busy;
+    $('track-width').disabled=active||model.busy;
+    $('extra-distance').disabled=active||model.busy;
+    $('session-options').classList.toggle('hidden',active&&cruising);
+    const inputKm=Number($('target-km').value)||0;
+    $('target-plan').textContent=t(active?'actualTargetNote':$('extra-distance').checked?'randomTargetNote':'exactTargetNote',{
+      max:Math.ceil(Math.min(60,inputKm*30)),base:((s.requested_target_m??s.target_m)/1000).toFixed(2),target:(s.target_m/1000).toFixed(3),extra:Math.max(0,s.target_m-(s.requested_target_m??s.target_m)).toFixed(1)});
+    $('rest-panel').classList.toggle('hidden',!active||!cruising);
+    const holdAvailable=active&&cruising&&(s.target_walking||phase!=='running');
+    $('hold-position').classList.toggle('hidden',!holdAvailable);
+    $('hold-position').disabled=!holdAvailable||!model.connected||model.busy||s.settling;
+    const restLabel=t(s.target_walking?'targetWalkingButton':{running:'restButton',slowing:'restSlowing',WALKING_REST:'restEnd',resuming:'restResuming'}[phase]);
+    if($('rest-toggle').textContent!==restLabel)$('rest-toggle').textContent=restLabel;
+    $('rest-toggle').disabled=!model.connected||model.busy||!active||!cruising||s.finishing||(s.control_cooldown_s||0)>0||performance.now()<restCooldownUntil||s.elapsed_s<0.95||['slowing','resuming'].includes(phase)||(s.stop_pending&&phase!=='WALKING_REST');
+    $('rest-status').textContent=t(s.target_walking?'targetWalkingNote':{running:'restRunningNote',slowing:'restSlowingNote',WALKING_REST:'restRestingNote',resuming:'restResumingNote'}[phase],{n:Math.max(0,Math.ceil((s.walk_duration_s||50)-(s.rest_elapsed_s||0)))});
+    $('rest-times').textContent=t('restTimes',{current:formatDuration(s.rest_elapsed_s||0),total:formatDuration(s.rest_total_s||0),session:formatDuration(s.session_elapsed_s??s.elapsed_s)});
+    $('lock-start').disabled=active||model.busy||model.track.length<3||!model.curveLength||!model.connected||s.recovery_required||s.recovering||s.preparing;
+    $('start-cruise').disabled=!startReady||!model.connected||model.busy||s.settling;
+    $('safe-settle').disabled=!active||model.busy||s.settling;
+    $('discard-panel').classList.toggle('hidden',!active);
+    $('discard-session').disabled=!active||!model.connected||model.busy||s.settling;
+    $('lock-start').classList.toggle('primary',!active);$('start-cruise').classList.toggle('primary',startReady);$('safe-settle').classList.toggle('primary',active&&!locked&&(s.state==='SAFE_STOPPED'||s.target_reached));
+    $('lock-subtitle').textContent=t(locked?'state_LOCKED_START':'lockSubtitle');
+    $('cruise-subtitle').textContent=t(locked&&startLabel?startLabel:cruising?'state_'+s.state:'cruiseSubtitle',{n:Math.ceil(s.countdown_s)});
+    let note=!active&&s.state==='SAFE_STOPPED'?'sandboxSessionEnded':locked?(startReady?'openPhone':startLabel||'state_LOCKED_START'):s.detour_pending?'pendingNote':s.state==='CRUISING_DETOUR'?'detourNote':s.state==='SAFE_STOPPED'?'stoppedNote':cruising?'loopNote':'sessionNote';
+    if(s.state==='IDLE'&&model.curveLength>0)note='trackReadyNote';
+    if(s.target_walking)note=phase==='WALKING_REST'?'targetWalkingNote':'finishingNote';else if(s.finishing)note='finishingNote';else if(active&&cruising&&phase!=='running')note={slowing:'restSlowingNote',WALKING_REST:'restRestingNote',resuming:'restResumingNote'}[phase];else if(active&&achieved&&cruising)note='detourFinishingNote';
+    if(s.restore_failed)note='restore_failed';
+    if(s.restore_dispatched)note='restoredNote';
+    $('session-note').textContent=t(note,{n:phase==='WALKING_REST'?Math.max(0,Math.ceil((s.walk_duration_s||50)-(s.rest_elapsed_s||0))):Math.ceil(s.countdown_s),hold:formatDuration(s.hold_elapsed_s||0)});
+    const issue=s.start_phase==='interrupted'?'start_interrupted':failed?'engineStoppedNote':active&&s.device.speed_fuse_tripped?'speedFuseNote':s.last_error==='route_too_complex'?'route_too_complex':active&&s.device.mode==='CONNECTED'&&((s.device.send_age_s||0)>1.1||(s.device.pending_samples||0)>=3)?'deliveryLateNote':s.device_issue?'deviceIssueNote':null;
+    const translatedDeviceCodes=['device_trust_required','device_developer_mode_required','tunnel_admin_required'];
+    const deviceCode=s.system.driver==='missing'?'driverMissing':s.system.driver==='stopped'?'driverStopped':
+      ['instance_running','multiple_devices','device_unavailable','tunnel_unavailable','device_connection_failed',...translatedDeviceCodes].includes(s.device.error_code)?s.device.error_code:'deviceIssueNote';
+    const actionable=['driverMissing','driverStopped',...translatedDeviceCodes].includes(deviceCode);
+    const diagnostic=issue==='deviceIssueNote'&&!actionable?(s.device_error||s.device.last_error||''):'';
+    $('session-error').textContent=issue?t(issue==='deviceIssueNote'?deviceCode:issue)+(diagnostic?'\n'+diagnostic:''):'';$('session-error').classList.toggle('hidden',!issue);
+  }
+  function animatedPosition(now){if(!motion)return null;const f=motion.duration?Math.max(0,Math.min(1,(now-motion.at)/motion.duration)):1;return[motion.from[0]+(motion.to[0]-motion.from[0])*f,motion.from[1]+(motion.to[1]-motion.from[1])*f];}
+  function animate(now){if(motion)mapView.setPosition(animatedPosition(now));if(now-lastArrowFrame>120){mapView.updateArrows(now);if(!mapView.leaflet&&!motion)mapView.drawCanvas();lastArrowFrame=now;}requestAnimationFrame(animate);}
+
+  function formatDuration(seconds) {const n=Math.max(0,Math.round(seconds));return (n>=3600?Math.floor(n/3600)+':':'')+String(Math.floor(n/60)%60).padStart(2,'0')+':'+String(n%60).padStart(2,'0');}
+  function formatPace(seconds) {const n=Math.max(0,Math.round(seconds));return `${Math.floor(n/60)}′${String(n%60).padStart(2,'0')}″`;}
+  function ingestTrace(data) {
+    if(data.reset||model.traceSession!==data.session_id){model.trace=[];model.traceSequence=0;}
+    model.traceSession=data.session_id;
+    for(const point of data.points){if(point.sequence>model.traceSequence){model.trace.push(point);model.traceSequence=point.sequence;}}
+    if(model.trace.length>TRACE_LIMIT)model.trace.splice(0,model.trace.length-TRACE_LIMIT);
+    model.traceSequence=data.sequence;
+    mapView.setTrace(model.trace.map(point=>[point.lat,point.lon]));
+  }
+  let traceBusy=false,traceRetryAt=0,traceErrorNotified=false;
+  async function syncTrace() {
+    const state=model.state;
+    if(!state?.session_id||traceBusy||performance.now()<traceRetryAt)return;
+    if(model.traceSession===state.session_id&&model.traceSequence===state.trace_sequence)return;
+    traceBusy=true;
+    try {
+      const data=await api('get_trace',model.traceSequence,model.traceSession);
+      if(state.session_id!==model.state?.session_id||data.session_id!==model.state?.session_id)return;
+      ingestTrace(data);traceErrorNotified=false;
+    } catch(error) {traceRetryAt=performance.now()+2000;if(!traceErrorNotified){toast('traceUnavailable',{},true);traceErrorNotified=true;}}
+    finally {traceBusy=false;}
+  }
+
+  let priorFocus=null;
+  function openModal(kind){closeTutorial({restoreFocus:false,restoreScroll:false});priorFocus=document.activeElement;model.modal=kind;model.dialogError=null;if(kind==='checklist')model.checks=Array(7).fill(false);if(kind==='settle'||kind==='discard')model.settleChecks=Array(kind==='discard'?2:3).fill(false);renderModal();$('modal').classList.remove('hidden');$('app').inert=true;setTimeout(()=>$('dialog').focus(),0);}
+  function closeModal(){model.modal=null;model.dialogError=null;$('modal').classList.add('hidden');$('app').inert=false;priorFocus?.focus();}
+  function renderModal(){const kind=model.modal,d=$('dialog');let html='';
+    if(kind==='checklist'){const names=['signal','battery','magnet','phone','clock','route',null];html=`${icon('lock','dialog-symbol')}<h2 id="dialog-title">${esc(t('checklistTitle'))}</h2><p>${esc(t('checklistIntro'))}</p><div class="checks">${names.map((name,i)=>`<label class="check${i===6?' weather-check':''}">${name?icon(name):''}<span>${esc(t('check'+(i+1)))}</span><input type="checkbox" data-check="${i}" ${model.checks[i]?'checked':''}></label>`).join('')}</div><div class="clock-row"><span id="clock-check-status" class="clock-status"></span><button id="recheck-clock" class="icon-button" title="${esc(t('retry'))}" aria-label="${esc(t('retry'))}">${icon('refresh')}</button></div><p class="small muted">${esc(t('clockNote'))}</p><div class="dialog-actions"><button data-dialog-cancel class="outline">${esc(t('cancel'))}</button><button id="confirm-lock" class="primary" disabled>${esc(t('confirmLock'))}</button></div>`;}
+    else if(kind==='settle')html=`${icon('check','dialog-symbol')}<h2 id="dialog-title">${esc(t('settleTitle'))}</h2><p>${esc(t('settleIntro'))}</p><div class="settlement-order" role="note">${esc(t('settleOrder'))}</div><div class="checks">${[1,2,3].map((n,i)=>`<label class="check"><span>${esc(t('settleCheck'+n))}</span><input type="checkbox" data-settle-check="${i}" ${model.settleChecks[i]?'checked':''}></label>`).join('')}</div><div class="dialog-notice">${esc(t('restoreWarning'))}</div><div class="dialog-actions"><button data-dialog-cancel class="outline">${esc(t('cancel'))}</button><button id="confirm-restore" class="primary" ${model.settleChecks.every(Boolean)&&!model.busy?'':'disabled'}>${esc(t(model.busy?'restoring':'confirmRestore'))}</button></div>`;
+    else if(kind==='discard'){
+      const checks=['discardCheck','discardAppClosed'].map((key,i)=>`<label class="check"><span>${esc(t(key))}</span><input type="checkbox" data-settle-check="${i}" ${model.settleChecks[i]?'checked':''}></label>`).join('');
+      html=`<h2 id="dialog-title">${esc(t('discardSession'))}</h2><p>${esc(t('discardIntro'))}</p><div class="checks">${checks}</div><div class="dialog-actions"><button data-dialog-cancel class="outline">${esc(t('cancel'))}</button><button id="confirm-restore" class="primary" ${model.settleChecks.every(Boolean)&&!model.busy?'':'disabled'}>${esc(t(model.busy?'restoring':'restoreAction'))}</button></div>`;
+    }
+    else if(kind==='close')html=`${icon('warning','dialog-symbol warning')}<h2 id="dialog-title">${esc(t('closeTitle'))}</h2><p>${esc(t('closeWarning'))}</p><div class="dialog-actions"><button data-dialog-cancel class="outline">${esc(t('understood'))}</button><button id="go-settle" class="primary">${esc(t('goSettle'))}</button></div>`;
+    else if(kind==='clear')html=`${icon('trash','dialog-symbol warning')}<h2 id="dialog-title">${esc(t('clearTitle'))}</h2><p>${esc(t(model.mode==='track'?'clearTrackBody':'clearDraftBody'))}</p><div class="dialog-actions"><button data-dialog-cancel class="outline">${esc(t('cancel'))}</button><button id="confirm-clear" class="primary">${esc(t('confirmClear'))}</button></div>`;
+    else if(kind==='activate')html=`${icon('route','dialog-symbol')}<h2 id="dialog-title">${esc(t('activateTitle'))}</h2><p>${esc(t('activateBody',{p:model.draft.length,t:model.draft.filter(p=>p.is_target).length}))}</p><div class="dialog-actions"><button data-dialog-cancel class="outline">${esc(t('cancel'))}</button><button id="confirm-activate" class="primary">${esc(t('confirmActivate'))}</button></div>`;
+    else if(kind==='help')html=`${icon('info','dialog-symbol')}<h2 id="dialog-title">${esc(t('helpTitle'))}</h2><div class="help-grid">${[1,2,3,4].map(n=>`<div><h3>${esc(t('help'+n+'Title'))}</h3><p>${esc(t('help'+n))}</p></div>`).join('')}</div><div class="dialog-actions"><button data-dialog-cancel class="primary">${esc(t('understood'))}</button></div>`;
+    d.innerHTML=html;d.querySelector('.dialog-actions')?.insertAdjacentHTML('beforebegin','<p id="dialog-error" class="dialog-error hidden" role="alert" tabindex="-1"></p>');renderDialogError();if(kind==='checklist')updateChecklist();
+  }
+  function updateChecklist(){
+    const clock=model.state?.clock||{status:'checking'};
+    const allowed=['synced','offline'].includes(clock.status);
+    const key={synced:'clockSynced',checking:'clockChecking',skew:'clockSkew',offline:'clockOffline',stale:'clockStale'}[clock.status]||'clockOffline';
+    const status=$('clock-check-status');
+    if(status){status.textContent=t(key,{n:Math.abs(clock.offset_s||0).toFixed(1)});status.className='clock-status '+clock.status;}
+    const checkbox=$('dialog').querySelector('[data-check="4"]');
+    if(checkbox){checkbox.disabled=!allowed||model.busy;if(!allowed){checkbox.checked=false;model.checks[4]=false;}}
+    if($('confirm-lock'))$('confirm-lock').disabled=!model.checks.every(Boolean)||!allowed||model.busy;
+  }
+  async function busyAction(action){if(model.busy)return;model.busy=true;model.dialogError=null;renderDialogError();renderState();renderEditor();if(model.modal)$('dialog').querySelectorAll('button,input').forEach(el=>el.disabled=true);try{await action();}catch(error){showError(error);}finally{model.busy=false;renderState();renderEditor();if(model.modal){renderModal();if(model.dialogError)$('dialog-error')?.focus();}}}
+  $('dialog').addEventListener('change',event=>{if(event.target.hasAttribute('data-check')){model.checks[Number(event.target.dataset.check)]=event.target.checked;updateChecklist();}if(event.target.hasAttribute('data-settle-check')){model.settleChecks[Number(event.target.dataset.settleCheck)]=event.target.checked;$('confirm-restore').disabled=!model.settleChecks.every(Boolean)||model.busy;}});
+  $('dialog').addEventListener('click',async event=>{const button=event.target.closest('button');if(!button)return;if(button.hasAttribute('data-dialog-cancel')){if(!model.busy)closeModal();return;}const id=button.id;
+    if(id==='recheck-clock'){await api('recheck_time').catch(showError);return;}
+    if(id==='go-settle'){openModal(model.state?.state==='LOCKED_START'?'discard':'settle');return;}
+    if(id==='confirm-clear'){remember();if(model.mode==='track'){model.track=[];model.curve=[];model.curveLength=0;}else model.draft=[];model.selected=-1;closeModal();edited();return;}
+    if(id==='confirm-lock')await busyAction(async()=>{
+      button.textContent=t('start_injecting');
+      clearTimeout(saveTimer);
+      const state=await api('lock_start',{points:model.track,profile:$('profile').value,target_km:Number($('target-km').value),track_width_m:Number($('track-width').value),extra_distance:$('extra-distance').checked,checks:model.checks});
+      acceptState(state);closeModal();
+    });
+    if(id==='confirm-activate')await busyAction(async()=>{const result=await api('submit_detour',model.draft);acceptState(result.state);if(model.state.session_id!==result.state.session_id)return;model.activePath=model.state.detour_pending||model.state.state==='CRUISING_DETOUR'?(result.path||model.draft.map(p=>[p.lat,p.lon])):[];model.draft=[];model.history.detour=[];model.selected=-1;mapView.render();closeModal();toast('detourQueued');});
+    if(id==='confirm-restore')await busyAction(async()=>{
+      const [first,second,third]=model.settleChecks;
+      const confirmation=model.modal==='discard'?{discarded:first,app_closed:second}:{submitted:first,success:second,app_closed:third};
+      renderModal();acceptState(await api('safe_settle',confirmation));model.activePath=[];mapView.render();closeModal();
+      if(!model.state.session_active)toast(model.state.restore_dispatched?'locationRestored':'sandboxSessionEnded');
+    });
+  });
+  $('lang-zh').addEventListener('click',()=>setLanguage('zh'));$('lang-en').addEventListener('click',()=>setLanguage('en'));
+  $('mode-track').addEventListener('click',()=>switchMode('track'));$('mode-detour').addEventListener('click',()=>switchMode('detour'));
+  $('help').addEventListener('click',()=>openModal('help'));
+  $('undo').addEventListener('click',()=>{if(model.mode==='track'&&trackLocked())return;const previous=model.history[model.mode].pop();if(previous){if(model.mode==='track')model.track=previous;else model.draft=previous;model.selected=-1;edited();}});
+  $('clear').addEventListener('click',()=>openModal('clear'));
+  $('save-track').addEventListener('click',()=>busyAction(async()=>{clearTimeout(saveTimer);await api('save_track',model.track);toast('trackSaved');}));
+  $('activate-detour').addEventListener('click',()=>openModal('activate'));
+  $('lock-start').addEventListener('click',()=>openModal('checklist'));
+  $('start-cruise').addEventListener('click',()=>busyAction(async()=>{acceptState(await api('start_cruise'));if(model.state.session_active)toast('sessionStarted');}));
+  let restCooldownUntil=0;
+  async function toggleWalkingBreak(){
+    if(model.busy||performance.now()<restCooldownUntil)return;
+    restCooldownUntil=performance.now()+1500;
+    await busyAction(async()=>{acceptState(await api(model.state?.pause_phase==='WALKING_REST'?'resume':'pause'));});
+  }
+  $('rest-toggle').addEventListener('click',toggleWalkingBreak);
+  $('hold-position').addEventListener('click',()=>busyAction(async()=>{acceptState(await api('hold_position'));}));
+  $('safe-settle').addEventListener('click',()=>openModal('settle'));
+  $('discard-session').addEventListener('click',()=>openModal('discard'));
+  $('recover-previous').addEventListener('click',()=>busyAction(async()=>{acceptState(await api('recover_previous_location'));if(!model.state.recovery_required)toast('previousLocationRecovered');}));
+  $('target-toggle').addEventListener('change',event=>{const point=model.draft[model.selected];if(!point)return;remember();point.is_target=event.target.checked;edited();});
+  $('vertex-list').addEventListener('click',event=>{const remove=event.target.closest('[data-remove]'),row=event.target.closest('[data-index]');if(remove){if(model.mode==='track'&&trackLocked())return;remember();currentPoints().splice(Number(remove.dataset.remove),1);model.selected=-1;edited();}else if(row){model.selected=Number(row.dataset.index);renderEditor();}});
+  $('vertex-list').addEventListener('keydown',event=>{if(['Enter',' '].includes(event.key)&&event.target.matches('[data-index]')){event.preventDefault();model.selected=Number(event.target.dataset.index);renderEditor();$('target-toggle')?.focus();}});
+  for(const id of ['profile','target-km','track-width','extra-distance'])$(id).addEventListener('change',async()=>{try{const value=Number($('target-km').value);if(!Number.isFinite(value)||value<.1||value>100)throw new Error('invalid_target');const width=Number($('track-width').value);if(!Number.isFinite(width)||width<1||width>8)throw new Error('invalid_track_width');await api('save_preferences',{profile:$('profile').value,target_km:value,track_width_m:width,extra_distance:$('extra-distance').checked});renderState();}catch(error){showError(error);}});
+  $('layer-hybrid').addEventListener('click',()=>{mapView.setLayer('hybrid');saveView();});$('layer-street').addEventListener('click',()=>{mapView.setLayer('street');saveView();});
+  $('zoom-in').addEventListener('click',()=>mapView.changeZoom(1));$('zoom-out').addEventListener('click',()=>mapView.changeZoom(-1));$('locate').addEventListener('click',()=>mapView.fit(model.track));
+  $('retry-map').addEventListener('click',()=>{if(mapView.leaflet){mapView.setLayer(model.layer);$('map-notice').classList.add('hidden');mapView.notice=null;}else{mapView.tiles.clear();mapView.drawCanvas();}});
+  let searchTimer;
+  async function searchPlaces(){const sequence=++model.searchSequence,box=$('search-results');box.innerHTML=`<p class="search-empty">${esc(t('searching'))}</p>`;box.classList.remove('hidden');try{const result=await api('search_places',$('search').value,model.language);if(sequence!==model.searchSequence)return;box.innerHTML=result.results.length?result.results.map((place,index)=>`<button class="search-result" data-result="${index}" role="option">${icon('pin','small-icon')}<span class="result-name">${esc(place.name)}</span><span class="source">${esc(t(place.source==='campus'?'campus':place.source==='coordinate'?'coordinateSource':'place'))}</span></button>`).join(''):`<p class="search-empty">${esc(t(result.remote==='unavailable'?'remoteUnavailable':'noResults'))}</p>`;box.querySelectorAll('[data-result]').forEach(button=>button.addEventListener('click',()=>{const place=result.results[Number(button.dataset.result)];mapView.setView([place.lat,place.lon],17);$('search').value=place.name;box.classList.add('hidden');}));}catch(error){if(sequence===model.searchSequence)box.innerHTML=`<p class="search-empty">${esc(t(error.message==='offlineStatic'?'offlineStatic':'connectionLost'))}</p>`;}}
+  $('search').addEventListener('input',()=>{clearTimeout(searchTimer);model.searchSequence++;searchTimer=setTimeout(searchPlaces,350);});$('search').addEventListener('focus',()=>{if(!$('search').value)searchPlaces();});$('search').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();clearTimeout(searchTimer);searchPlaces();}if(event.key==='Escape')$('search-results').classList.add('hidden');if(event.key==='ArrowDown'){event.preventDefault();$('search-results').querySelector('button')?.focus();}});
+  $('search-results').addEventListener('keydown',event=>{const buttons=[...$('search-results').querySelectorAll('button')],index=buttons.indexOf(document.activeElement);if(event.key==='Escape'){$('search-results').classList.add('hidden');$('search').focus();}if(['ArrowDown','ArrowUp'].includes(event.key)&&buttons.length){event.preventDefault();buttons[(index+(event.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length].focus();}});
+  document.addEventListener('pointerdown',event=>{if(!event.target.closest('.search'))$('search-results').classList.add('hidden');});
+  document.addEventListener('keydown',event=>{if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();$('search').focus();}if(model.modal){if(event.key==='Escape'&&!model.busy)closeModal();if(event.key==='Tab'){const focusable=[...$('dialog').querySelectorAll('button:not(:disabled),input:not(:disabled),[tabindex="0"]')];if(focusable.length){const first=focusable[0],last=focusable[focusable.length-1];if(event.shiftKey&&(document.activeElement===first||document.activeElement===$('dialog'))){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}}}return;}if(!event.target.matches('input,select,textarea')&&(event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='z'){event.preventDefault();$('undo').click();}});
+  window.addEventListener('beforeunload',event=>{if(trackLocked()){event.preventDefault();event.returnValue='';}});
+  window.Chill=window.Piggy={requestCloseWarning:()=>openModal('close')};
+  async function bootstrap(){try{const data=await api('bootstrap');model.config=data.config;model.language=data.config.language;model.track=data.config.track_points;model.layer=data.config.layer;model.activePath=data.active_path||[];$('profile').value=data.config.profile;$('target-km').value=data.config.target_km.toFixed(1);$('track-width').value=data.config.track_width_m??8;$('extra-distance').checked=Boolean(data.config.extra_distance);mapView.setView(data.config.map_center,data.config.map_zoom);mapView.setLayer(model.layer);acceptState(data.state);applyLanguage();if(model.track.length>=3){await previewTrack(++previewSequence);mapView.fit(model.track);}mapView.render();considerTutorial();return true;}catch(error){toast(error.message==='offlineStatic'?'offlineStatic':'connectionLost',{},true);return false;}}
+  let bootstrapped=false,lastBackendNotice=0;
+  async function poll(){const started=performance.now();try{if(!bootstrapped)bootstrapped=await bootstrap();else acceptState(await api('get_state'));}catch(error){model.connected=false;renderState();if(Date.now()-lastBackendNotice>15000){toast('backendUnavailable',{},true);lastBackendNotice=Date.now();}}finally{setTimeout(poll,Math.max(20,100-(performance.now()-started)));}}
+  mapView=new MapView();applyLanguage();mapView.render();requestAnimationFrame(animate);poll();
+  </script>
+</body>
+</html>

@@ -1,0 +1,173 @@
+name: Build Windows Portable
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-portable-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: '1'
+      PYTHONUNBUFFERED: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+          architecture: x64
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install -r requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -c "import yaml; print('PyYAML', yaml.__version__)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify source and interface contracts
+        run: |
+          python -m unittest -v test_engine test_main test_build test_recovery test_scheduling test_precision test_audit test_boundaries test_hardening
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node test_ui.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build the folder distribution
+        # Keep these explicit. A single-file executable is deliberately disallowed.
+        run: |
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onedir `
+            --noconsole `
+            --uac-admin `
+            --noupx `
+            --name Chill `
+            --icon "ui/assets/chill.ico" `
+            --contents-directory _internal `
+            --add-data "ui:ui" `
+            --collect-all pymobiledevice3 `
+            --recursive-copy-metadata pymobiledevice3 `
+            --collect-all webview `
+            --collect-all pytun_pmd3 `
+            --hidden-import pymobiledevice3.__main__ `
+            --hidden-import webview.platforms.edgechromium `
+            main.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip freeze | Set-Content -Encoding utf8 build/dependencies-windows.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Smoke test the frozen Sandbox and private daemon entry
+        run: python scripts/smoke_windows.py dist/Chill/Chill.exe
+
+      - name: Validate and archive the complete folder
+        run: python scripts/package_windows.py --dependencies build/dependencies-windows.txt
+
+      - name: Build the Windows installer on the cloud runner
+        run: |
+          $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $compiler)) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if (-not (Test-Path $compiler)) { throw "Inno Setup compiler not found" }
+          $version = "0.1.0"
+          if ($env:GITHUB_REF_TYPE -eq "tag") { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
+          & $compiler "/DAppVersion=$version" scripts/installer_windows.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload tested release files
+        uses: actions/upload-artifact@v7
+        with:
+          name: Chill-Windows-Release
+          path: |
+            dist/Chill-Setup.exe
+            dist/Chill-Windows-Portable.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload portable ZIP
+        uses: actions/upload-artifact@v7
+        with:
+          name: Chill-Windows-Portable
+          path: dist/Chill-Windows-Portable.zip
+          # It is already a ZIP. Download the file directly, without another ZIP layer.
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+
+  macos-tests:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Run complete offline and process lifecycle regressions on macOS
+        run: |
+          python -m pip install PyYAML
+          python -c "import yaml"
+          python -m unittest -v test_engine test_main test_build test_recovery test_scheduling test_precision test_audit test_boundaries test_hardening
+          node test_ui.js
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, macos-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - name: Publish Windows downloads after both test jobs pass
+        run: |
+          gh run download "$GITHUB_RUN_ID" --name Chill-Windows-Release --dir release
+          test -s release/Chill-Setup.exe
+          test -s release/Chill-Windows-Portable.zip
+          cat > release-notes.md <<'NOTES'
+          Windows 10/11 x64: download **Chill-Setup.exe** and run the installer.
+
+          The installer includes the application and its Python dependencies. An optional portable ZIP is also available; extract its entire folder before running Chill.exe.
+
+          iPhone use requires Apple device drivers, device trust and Developer Mode. This release is unsigned and has passed automated offline tests and a frozen Sandbox smoke test; real-device compatibility still needs validation.
+          NOTES
+          gh release create "$RELEASE_TAG" release/Chill-Setup.exe release/Chill-Windows-Portable.zip --verify-tag --title "Chill $RELEASE_TAG" --notes-file release-notes.md

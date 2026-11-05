@@ -1,0 +1,2 @@
+# Compatibility alias; requirements.txt now includes real-device support.
+-r requirements.txt

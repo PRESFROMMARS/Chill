@@ -1,0 +1,32 @@
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.venv/
+.DS_Store
+preview_config.json
+.taste-skill/inspect/
+build/
+dist/
+Pace.spec
+Chill.spec
+
+# Local design state, input photos, generated audit output and old source snapshots.
+.taste-skill/
+IMG_0288.jpg
+artifacts/*
+!artifacts/piggy-desktop-zh.jpg
+!artifacts/chill-brand/
+# Never publish local device sessions, logs or credentials.
+*.log
+*.log.*
+*.location-session.json
+*.lock
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+*.mobileprovision
+.env
+.env.*

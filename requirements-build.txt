@@ -1,0 +1,5 @@
+-r requirements.txt
+PyInstaller>=6.16,<7
+# Required for workflow regression tests; CI checks this import before tests.
+# Not bundled as an application dependency.
+PyYAML>=6.0.2,<7
