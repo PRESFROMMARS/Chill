@@ -1081,10 +1081,29 @@ def _run_tunnel_command(arguments: list[str]) -> int:
             child.wait(timeout=1)
 
 
+def _check_device_driver_imports() -> int:
+    """Exercise the frozen userspace, DDI and DVT imports without opening USB."""
+    try:
+        from pymobiledevice3.remote.rsd_tunnel import PreferredRsdTunnel
+        from pymobiledevice3.remote.userspace_tunnel import UserspaceRsdTunnel
+        from pymobiledevice3.services.cryptexd import CryptexdService
+        from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
+        from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
+        from pymobiledevice3.services.mobile_image_mounter import auto_mount
+
+        if not all(callable(entry) for entry in (PreferredRsdTunnel, UserspaceRsdTunnel, CryptexdService.auto_install_ddi,
+                                                  DvtProvider, LocationSimulation.set, auto_mount)):
+            raise RuntimeError("incomplete device driver API")
+    except Exception:
+        LOGGER.exception("Packaged device driver import check failed")
+        return 1
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     child_mode = any(flag in arguments for flag in ("--piggy-tunneld", "--start-tunneld", "--piggy-tunnel-command"))
-    _prepare_windowed_streams(child_mode=child_mode)
+    _prepare_windowed_streams(child_mode=child_mode or "--piggy-check-device-driver" in arguments)
     parser = argparse.ArgumentParser(description="Chill desktop route workbench")
     parser.add_argument("--preview", action="store_true", help="serve a local browser preview (always Sandbox)")
     parser.add_argument("--sandbox", action="store_true", help="never connect to an iPhone")
@@ -1094,6 +1113,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--parent-pid", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--piggy-tunneld", "--start-tunneld", nargs=argparse.REMAINDER, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--piggy-tunnel-command", nargs=argparse.REMAINDER, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--piggy-check-device-driver", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(arguments)
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -1113,6 +1133,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 watchdog.close()
     if args.parent_pid is not None:
         parser.error("--parent-pid requires a private tunnel entry")
+    if args.piggy_check_device_driver:
+        return _check_device_driver_imports()
     if not 0 <= args.port <= 65535:
         parser.error("port must be between 0 and 65535")
     webview = None

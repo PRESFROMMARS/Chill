@@ -83,7 +83,7 @@ jobs:
           python -m pip freeze | Set-Content -Encoding utf8 build/dependencies-windows.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Smoke test the frozen Sandbox and private daemon entry
+      - name: Smoke test the frozen Sandbox, daemon entry, and iOS driver imports
         run: python scripts/smoke_windows.py dist/Chill/Chill.exe
 
       - name: Validate and archive the complete folder

@@ -157,8 +157,9 @@ python scripts/verify_alignment.py
 朋友版配图说明见 [README_FOR_HER.md](README_FOR_HER.md)，也会放入便携包。
 
 构建使用 PyInstaller 的 `--onedir --noconsole --uac-admin --noupx`，收集完整 `ui/`、
-`pymobiledevice3` 子模块、依赖元数据与隧道资源。CI 在 Windows 上运行单元测试、
-冻结程序的沙盒与隧道命令加载检查，再校验静态资源、生成文件哈希清单并压缩。
+`pymobiledevice3` 子模块、依赖元数据与隧道资源。CI 在 Windows 上运行单元测试，
+检查冻结程序的沙盒、隧道命令、userspace RSD、DDI 和 DVT 导入，再校验静态资源、
+生成文件哈希清单并压缩。
 文件夹打包不能保证消除安全软件的全部误报；本项目没有代码签名证书。
 
 也可以在 Windows 源码目录安装 `requirements-build.txt` 后，使用工作流中的

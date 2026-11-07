@@ -72,13 +72,11 @@ class DeviceSelectionTests(unittest.TestCase):
     def test_clean_automatic_cache_is_discarded_when_a_different_phone_is_present(self):
         bridge = self.bridge()
         bridge.udid, bridge.ios_version = "old-phone", "27.0"
-        bridge._mounted_udids.add("old-phone")
         importer, _ = self.driver(["new-phone"])
         with patch.object(e.importlib, "import_module", side_effect=importer):
             self.assertEqual(asyncio.run(bridge._select_device()), "new-phone")
         self.assertIsNone(bridge.udid)
         self.assertIsNone(bridge.ios_version)
-        self.assertNotIn("old-phone", bridge._mounted_udids)
 
     def test_unplugged_automatic_cache_is_cleared_and_reenumerates(self):
         bridge = self.bridge()
@@ -189,6 +187,50 @@ class BoundaryTests(unittest.TestCase):
         self.assertIn("exit=5", str(error.exception))
         self.assertNotIn("\x1b", str(error.exception))
         self.assertLessEqual(len(str(error.exception)), 1600)
+
+    def test_tunneld_startup_waits_for_the_selected_phone_and_reuses_transport(self):
+        bridge = e.IOSDeviceBridge(connect_timeout=1)
+        self.addCleanup(bridge.close)
+        bridge.udid = "test-udid"
+        bridge.TUNNEL_POLL_SECONDS = .01
+        entries = {"TESTUDID": [{"tunnel-address": "::1", "tunnel-port": 1234}]}
+        importer, calls = test_engine.BridgeTests().fake_driver()
+        addresses = []
+
+        class RSD:
+            udid = "test-udid"
+
+            def __init__(self, address):
+                addresses.append(address)
+
+            async def connect(self):
+                pass
+
+            async def close(self):
+                pass
+
+        def modules(name):
+            if name.endswith(".rsd_tunnel"):
+                calls.append("preferred")
+                raise ImportError("preferred tunnel unavailable")
+            if name.endswith(".remote_service_discovery"):
+                return SimpleNamespace(RemoteServiceDiscoveryService=RSD)
+            return importer(name)
+
+        async def exercise():
+            for _ in range(2):
+                async with AsyncExitStack() as stack:
+                    self.assertIsInstance(await bridge._open_rsd(stack, bridge.udid), RSD)
+
+        with patch.object(e.importlib, "import_module", side_effect=modules), \
+             patch.object(bridge, "_read_tunneld", side_effect=[OSError("starting"), {}, entries, entries]) as read, \
+             patch.object(bridge, "_spawn_tunneld") as spawn, \
+             patch.object(bridge, "_owned_tunneld_running", side_effect=[False, True]):
+            asyncio.run(exercise())
+        spawn.assert_called_once()
+        self.assertEqual(read.call_count, 4)
+        self.assertEqual(calls, ["preferred"])
+        self.assertEqual(addresses, [("::1", 1234)]*2)
 
     def test_tunnel_pipe_reader_is_drained_and_closed_after_child_exit(self):
         bridge = e.IOSDeviceBridge()

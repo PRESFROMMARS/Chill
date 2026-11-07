@@ -94,6 +94,17 @@ class SmokeTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "import stalled"):
                     smoke.smoke(executable)
 
+    def test_smoke_checks_the_direct_driver_imports_after_the_tunnel_cli(self):
+        ok = subprocess.CompletedProcess([], 0, stdout="")
+        broken = subprocess.CompletedProcess([], 1, stdout="missing Cryptex API")
+        with tempfile.TemporaryDirectory() as folder:
+            executable = Path(folder)/"Chill.exe"
+            executable.write_bytes(b"MZfixture")
+            with patch.object(smoke.subprocess, "run", side_effect=[ok, broken]) as run:
+                with self.assertRaisesRegex(RuntimeError, "missing Cryptex API"):
+                    smoke.smoke(executable)
+                self.assertEqual(run.call_args.args[0], [str(executable.resolve()), "--piggy-check-device-driver"])
+
 
 class ArchiveTests(unittest.TestCase):
     def setUp(self):

@@ -1980,11 +1980,9 @@ class IOSDeviceBridge:
     interactive elevation. Lack of permissions/drivers/trust/DDI becomes Sandbox
     with an explicit reason. Never kills a tunneld that this instance did not own.
 
-    Reconnection attempts are separated by 0.2 s AFTER failure; USB enumeration,
-    tunnel establishment, image mounting and OS scheduling can take longer.
-    0.2 s is a retry interval, not a physical reconnection or GPS guarantee.
-    Missing-device sessions retry every 2 s; a previously connected device uses
-    the fast interval. Motion never blocks on these operations.
+    A dropped session gets one quick reconnect. Failed connection attempts
+    back off to avoid repeatedly opening USB and RSD services. Motion never
+    blocks on these operations.
 
     Adjacent samples are queued while connected. Critical samples and the
     approach samples needed to reach them survive USB loss until acknowledged.
@@ -1997,10 +1995,12 @@ class IOSDeviceBridge:
 
     RETRY_SECONDS = 0.2
     DISCOVERY_SECONDS = 2.0
+    MAX_DISCOVERY_SECONDS = 8.0
+    TUNNEL_POLL_SECONDS = 0.5
 
     def __init__(self, udid: Optional[str] = None, *, sandbox: bool = False,
-                 auto_start_tunneld: bool = True, connect_timeout: float = 12.0,
-                 send_timeout: float = 1.5, mount_timeout: float = 180.0,
+                 auto_start_tunneld: bool = True, connect_timeout: Optional[float] = None,
+                 send_timeout: Optional[float] = None, mount_timeout: float = 180.0,
                  low_battery_percent: float = 20.0,
                  tunneld_command: Optional[Sequence[str]] = None,
                  clock: Optional[Callable[[], float]] = None,
@@ -2028,6 +2028,7 @@ class IOSDeviceBridge:
         self._send_late_count = 0
         self._max_send_gap_s = 0.0
         self._battery_task = None
+        self._dvt_disconnect_task = None
         self.force_sandbox = bool(sandbox)
         self.auto_start_tunneld = bool(auto_start_tunneld)
         if tunneld_command is not None and (
@@ -2035,8 +2036,11 @@ class IOSDeviceBridge:
                 any(not isinstance(arg, str) or not arg or "\x00" in arg for arg in tunneld_command)):
             raise ValueError("tunneld_command must be a nonempty sequence of argument strings")
         self._tunneld_command = list(tunneld_command) if tunneld_command is not None else None
-        self.connect_timeout = _finite(connect_timeout, "connect_timeout")
-        self.send_timeout = _finite(send_timeout, "send_timeout")
+        windows = sys.platform == "win32"
+        self.connect_timeout = _finite(connect_timeout if connect_timeout is not None else (30.0 if windows else 12.0),
+                                       "connect_timeout")
+        self.send_timeout = _finite(send_timeout if send_timeout is not None else (5.0 if windows else 1.5),
+                                    "send_timeout")
         self.mount_timeout = _finite(mount_timeout, "mount_timeout")
         self.low_battery_percent = _finite(low_battery_percent, "low_battery_percent")
         if min(self.connect_timeout, self.send_timeout, self.mount_timeout) <= 0 or not 0 <= self.low_battery_percent <= 100:
@@ -2046,6 +2050,8 @@ class IOSDeviceBridge:
         self._thread = None
         self._loop = None
         self._task = None
+        self._open_task = None
+        self._retry_wakeup = None
         self._stack = None
         self._simulator = None
         self._provider = None
@@ -2062,7 +2068,7 @@ class IOSDeviceBridge:
         self._tunnel_log = deque(maxlen=20)
         self._tunnel_readers = []
         self._last_spawn = -math.inf
-        self._mounted_udids = set()
+        self._tunneld_in_use = False
         self._ever_connected = False
         self._closed = False
         self._closing = False
@@ -2356,7 +2362,6 @@ class IOSDeviceBridge:
         if len(serials) != 1:
             with self._lock:
                 self.udid = self.ios_version = None
-                self._mounted_udids.discard(previous)
             if serials:
                 raise DeviceConnectionError("multiple_devices", "Multiple devices detected; keep only one connected or specify a device UDID")
             raise DeviceConnectionError("device_unavailable", "No iPhone is connected")
@@ -2364,27 +2369,48 @@ class IOSDeviceBridge:
         if previous != selected:
             with self._lock:
                 self.udid = self.ios_version = None
-                self._mounted_udids.discard(previous)
         return selected
 
+    def _owned_tunneld_running(self) -> bool:
+        with self._lock:
+            return any(child.poll() is None for child in self._children)
+
     async def _tunneld_provider(self, stack: AsyncExitStack) -> Any:
-        try:
-            devices = await _invoke(self._read_tunneld, _executor=self._driver_executor)
-        except (OSError, ValueError) as exc:
+        with self._lock:
+            self.reason = "Waiting for local TCP tunneld"
+        deadline = time.monotonic()+self.connect_timeout
+        started = False
+        cause = "no RSD tunnel for the selected iPhone"
+        while time.monotonic() < deadline:
             try:
-                self._spawn_tunneld()
-            except OSError as spawn_error:
-                raise DeviceConnectionError("tunnel_unavailable", self._tunnel_failure(spawn_error)) from spawn_error
+                devices = await asyncio.wait_for(_invoke(self._read_tunneld, _executor=self._driver_executor),
+                                                 timeout=max(.001, deadline-time.monotonic()))
+            except (OSError, ValueError, asyncio.TimeoutError) as exc:
+                cause = f"tunneld discovery failed: {type(exc).__name__}: {exc}"
+                if not started:
+                    started = True
+                    try:
+                        self._spawn_tunneld()
+                    except OSError as spawn_error:
+                        raise DeviceConnectionError("tunnel_unavailable", self._tunnel_failure(spawn_error)) from spawn_error
+                if not self._owned_tunneld_running():
+                    raise DeviceConnectionError("tunnel_unavailable", self._tunnel_failure(cause)) from exc
+            else:
+                if self.udid is None and len(devices) > 1:
+                    raise DeviceConnectionError("multiple_devices", "Multiple devices detected; specify a device UDID")
+                selected = self.udid or next(iter(devices), "")
+                key = selected.replace("-", "").casefold()
+                details = [detail for serial, entries in devices.items()
+                           if serial.replace("-", "").casefold() == key and isinstance(entries, list)
+                           for detail in entries]
+                if details:
+                    break
+                cause = "no RSD tunnel for the selected iPhone"
+            await asyncio.sleep(min(self.TUNNEL_POLL_SECONDS, max(0.0, deadline-time.monotonic())))
+        else:
             raise DeviceConnectionError("tunnel_unavailable", self._tunnel_failure(
-                f"tunneld unavailable; driver/admin privileges may be required: {exc}")) from exc
-        if not devices:
-            raise ConnectionError("tunneld has no connected iPhone")
-        if self.udid is None and len(devices) != 1:
-            raise ConnectionError("multiple devices; specify udid")
-        selected = self.udid if self.udid is not None else next(iter(devices))
-        details = devices.get(selected)
-        if not isinstance(details, list) or not details:
-            raise ConnectionError("selected device has no active RSD tunnel")
+                f"tunneld did not publish the iPhone within {self.connect_timeout:g}s: {cause}"))
+
         rsd_class = importlib.import_module("pymobiledevice3.remote.remote_service_discovery").RemoteServiceDiscoveryService
         errors = []
         for detail in details:
@@ -2395,94 +2421,134 @@ class IOSDeviceBridge:
                     raise ValueError("invalid RSD port")
                 rsd = rsd_class((host, port))
                 attempt.push_async_callback(self._close_resource, rsd)
-                await _invoke(rsd.connect, _executor=self._driver_executor)
+                await asyncio.wait_for(_invoke(rsd.connect, _executor=self._driver_executor),
+                                       timeout=max(.001, deadline-time.monotonic()))
+                self._verify_rsd_device(rsd, selected)
                 stack.push_async_callback(attempt.aclose)
+                self._tunneld_in_use = True
                 return rsd
             except BaseException as exc:
                 await attempt.aclose()
                 if not isinstance(exc, Exception):
                     raise
-                errors.append(str(exc))
-        raise ConnectionError("RSD tunnel connection failed: "+"; ".join(errors))
+                errors.append(f"{type(exc).__name__}: {exc}")
+                if time.monotonic() >= deadline:
+                    break
+        raise DeviceConnectionError("tunnel_unavailable", self._tunnel_failure(
+            "tunneld RSD handshake failed: "+"; ".join(errors)))
+
+    @staticmethod
+    def _verify_rsd_device(provider: Any, selected: str) -> None:
+        actual = getattr(provider, "udid", None)
+        if not actual:
+            raise DeviceConnectionError("device_unavailable", "RSD did not identify the selected iPhone")
+        if actual.replace("-", "").casefold() != selected.replace("-", "").casefold():
+            raise DeviceConnectionError("device_unavailable", "RSD identified a different iPhone; refusing control")
+
+    @contextlib.contextmanager
+    def _connection_stage(self, stage: str, timeout: float):
+        with self._lock:
+            self.reason = stage
+        try:
+            yield
+        except asyncio.TimeoutError as exc:
+            raise DeviceConnectionError("device_connection_failed", f"{stage} timed out after {timeout:g}s") from exc
+        except Exception as exc:
+            raise DeviceConnectionError(_device_error_code(exc), f"{stage}: {type(exc).__name__}: {exc}") from exc
+
+    async def _open_rsd(self, stack: AsyncExitStack, selected: str) -> Any:
+        # An already running owned daemon may still hold the device tunnel.
+        if self._tunneld_in_use or self._owned_tunneld_running():
+            try:
+                return await self._tunneld_provider(stack)
+            except Exception:
+                self._tunneld_in_use = False
+                raise
+
+        preferred_stack = AsyncExitStack()
+        try:
+            with self._connection_stage("Preferred RSD tunnel", self.connect_timeout):
+                preferred = importlib.import_module("pymobiledevice3.remote.rsd_tunnel").PreferredRsdTunnel
+                provider = await asyncio.wait_for(
+                    self._enter_resource(preferred_stack, preferred(serial=selected, autopair=False)), timeout=self.connect_timeout)
+                self._verify_rsd_device(provider, selected)
+        except BaseException as exc:
+            await preferred_stack.aclose()
+            if not isinstance(exc, Exception):
+                raise
+            preferred_code = _device_error_code(exc)
+            if preferred_code in {"device_trust_required", "device_developer_mode_required", "device_unavailable"}:
+                raise
+            try:
+                return await self._tunneld_provider(stack)
+            except Exception as fallback:
+                fallback_code = _device_error_code(fallback, "tunnel_unavailable")
+                if fallback_code == "tunnel_unavailable" and preferred_code == "tunnel_admin_required":
+                    fallback_code = preferred_code
+                raise DeviceConnectionError(fallback_code,
+                    _diagnostic_text(f"{exc}; Tunneld fallback: {fallback}")) from fallback
+        stack.push_async_callback(preferred_stack.aclose)
+        return provider
 
     async def _open_session(self) -> None:
         stack = AsyncExitStack()
         try:
-            requested = await self._select_device()
+            with self._connection_stage("usbmux device discovery", self.connect_timeout):
+                requested = await self._select_device()
             self._claim_device(requested)
-            lockdown_module = importlib.import_module("pymobiledevice3.lockdown")
-            lockdown = await asyncio.wait_for(
-                _invoke(lockdown_module.create_using_usbmux, serial=requested, autopair=False,
-                        _executor=self._driver_executor), timeout=self.connect_timeout)
-            stack.push_async_callback(self._close_resource, lockdown)
-            if getattr(lockdown, "paired", None) is False:
-                raise DeviceConnectionError("device_trust_required", "The iPhone has not trusted this computer")
-            version = str(getattr(lockdown, "product_version", ""))
-            major = int(version.split(".")[0])
-            if not 17 <= major <= 27:
-                raise RuntimeError(f"iOS {version} is outside configured 17–27 range")
-            selected = getattr(lockdown, "udid", None) or getattr(lockdown, "identifier", None)
-            if not selected:
-                raise RuntimeError("lockdown did not identify the device")
-            if selected.replace("-", "").casefold() != requested.replace("-", "").casefold():
-                raise DeviceConnectionError("device_unavailable", "Device identity changed during connection; refusing control")
+            with self._connection_stage("USB Lockdown handshake", self.connect_timeout):
+                async with AsyncExitStack() as probe:
+                    lockdown_module = importlib.import_module("pymobiledevice3.lockdown")
+                    lockdown = await asyncio.wait_for(
+                        _invoke(lockdown_module.create_using_usbmux, serial=requested, autopair=False,
+                                _executor=self._driver_executor), timeout=self.connect_timeout)
+                    probe.push_async_callback(self._close_resource, lockdown)
+                    if getattr(lockdown, "paired", None) is False:
+                        raise DeviceConnectionError("device_trust_required", "The iPhone has not trusted this computer")
+                    version = str(getattr(lockdown, "product_version", ""))
+                    major = int(version.split(".")[0])
+                    if not 17 <= major <= 27:
+                        raise RuntimeError(f"iOS {version} is outside configured 17–27 range")
+                    selected = getattr(lockdown, "udid", None) or getattr(lockdown, "identifier", None)
+                    if not selected:
+                        raise RuntimeError("lockdown did not identify the device")
+                    if selected.replace("-", "").casefold() != requested.replace("-", "").casefold():
+                        raise DeviceConnectionError("device_unavailable", "Device identity changed during connection; refusing control")
             with self._lock:
                 self.udid, self.ios_version = selected, version
-            # PreferredRsdTunnel owns the RemoteServiceDiscoveryService and
-            # selects userspace / macOS-native transport without UI involvement.
-            preferred_error = None
-            preferred_stack = AsyncExitStack()
-            try:
-                preferred = importlib.import_module("pymobiledevice3.remote.rsd_tunnel").PreferredRsdTunnel
-                provider = await asyncio.wait_for(
-                    self._enter_resource(preferred_stack, preferred(serial=selected, autopair=False)), timeout=self.connect_timeout)
-                stack.push_async_callback(preferred_stack.aclose)
-            except BaseException as exc:
-                await preferred_stack.aclose()
-                if not isinstance(exc, Exception):
-                    raise
-                preferred_error = exc
-                preferred_code = _device_error_code(exc)
-                if preferred_code in {"device_trust_required", "device_developer_mode_required"}:
-                    raise DeviceConnectionError(preferred_code, _diagnostic_text(exc)) from exc
-                try:
-                    provider = await asyncio.wait_for(self._tunneld_provider(stack), timeout=self.connect_timeout)
-                except Exception as fallback:
-                    fallback_code = _device_error_code(fallback, "tunnel_unavailable")
-                    if fallback_code == "tunnel_unavailable" and preferred_code == "tunnel_admin_required":
-                        fallback_code = preferred_code
-                    raise DeviceConnectionError(fallback_code,
-                        _diagnostic_text(f"Preferred RSD: {exc}; fallback: {fallback}")) from fallback
-            if preferred_error is not None:
-                LOGGER.debug("using tunneld fallback: %s", preferred_error)
-            if selected not in self._mounted_udids:
+            provider = await self._open_rsd(stack, selected)
+            with self._connection_stage(f"iOS {version} DDI auto-mount over RSD", self.mount_timeout):
                 mounter = importlib.import_module("pymobiledevice3.services.mobile_image_mounter")
+                # Let the driver check the phone again on every new session.
+                # A cached UDID cannot tell us whether the phone rebooted.
                 try:
-                    await asyncio.wait_for(_invoke(mounter.auto_mount, provider, _executor=self._driver_executor), timeout=self.mount_timeout)
+                    await asyncio.wait_for(_invoke(mounter.auto_mount, provider, _executor=self._driver_executor),
+                                           timeout=self.mount_timeout)
                 except Exception as exc:
-                    exceptions = importlib.import_module("pymobiledevice3.exceptions")
-                    already = getattr(exceptions, "AlreadyMountedError", None)
-                    if already is None or not isinstance(exc, already):
+                    try:
+                        exceptions = importlib.import_module("pymobiledevice3.exceptions")
+                    except ImportError:
+                        already_mounted = ()
+                    else:
+                        already_mounted = getattr(exceptions, "AlreadyMountedError", ())
+                    if not isinstance(exc, already_mounted):
                         raise
-                self._mounted_udids.add(selected)
-            try:
-                # Modern PMD renamed DvtSecureSocketProxyService to DvtProvider.
-                dvt_class = importlib.import_module("pymobiledevice3.services.dvt.instruments.dvt_provider").DvtProvider
-            except (ImportError, AttributeError):
-                dvt_class = importlib.import_module("pymobiledevice3.services.dvt.dvt_secure_socket_proxy").DvtSecureSocketProxyService
-            try:
+            with self._connection_stage("DVT handshake", self.connect_timeout):
+                try:
+                    dvt_class = importlib.import_module("pymobiledevice3.services.dvt.instruments.dvt_provider").DvtProvider
+                except (ImportError, AttributeError):
+                    dvt_class = importlib.import_module("pymobiledevice3.services.dvt.dvt_secure_socket_proxy").DvtSecureSocketProxyService
                 dvt = await asyncio.wait_for(self._enter_resource(stack, dvt_class(provider)), timeout=self.connect_timeout)
+            with self._connection_stage("DVT LocationSimulation channel", self.connect_timeout):
                 sim_class = importlib.import_module("pymobiledevice3.services.dvt.instruments.location_simulation").LocationSimulation
                 simulator = await asyncio.wait_for(self._enter_resource(stack, sim_class(dvt)), timeout=self.connect_timeout)
-            except Exception:
-                # Reboot can invalidate the DDI mounted earlier in this process.
-                self._mounted_udids.discard(selected)
-                raise
+            wait_disconnected = getattr(getattr(dvt, "dtx", None), "wait_disconnected", None)
+            if wait_disconnected is not None:
+                self._dvt_disconnect_task = asyncio.create_task(wait_disconnected())
             self._stack, self._simulator, self._provider = stack, simulator, provider
         except BaseException:
             if not self._device_is_pinned():
                 with self._lock:
-                    self._mounted_udids.discard(self.udid)
                     self.udid = self.ios_version = None
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(stack.aclose(), timeout=2.0)
@@ -2512,12 +2578,13 @@ class IOSDeviceBridge:
             except asyncio.TimeoutError:
                 self.last_error = "location reset waiting for an unfinished synchronous driver call"
                 return False
-        task = self._battery_task
+        tasks = (self._battery_task, self._dvt_disconnect_task)
         self._battery_task = None
-        if task is not None and task is not asyncio.current_task() and not task.done():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        self._dvt_disconnect_task = None
+        for task in tasks:
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
         simulator, stack = self._simulator, self._stack
         cleared = self._last_clear_succeeded or not (self._ever_connected or self._location_dirty)
         if clear and simulator is not None:
@@ -2649,7 +2716,7 @@ class IOSDeviceBridge:
                 # intact; jumping a checkpoint ahead could trip the speed fuse.
                 return self._critical[0]
             heartbeat_due = self._last_send_completed_at is not None and self._wire_clock()-self._last_send_completed_at >= MOTION_INTERVAL_S
-            return self._latest if self._latest is not None and (self._latest[0] > self._sent_sequence or heartbeat_due) else None
+            return self._latest if self._latest is not None and (reconnect or self._latest[0] > self._sent_sequence or heartbeat_due) else None
 
     @contextlib.asynccontextmanager
     async def _sending_sample(self):
@@ -2709,9 +2776,12 @@ class IOSDeviceBridge:
                         self._dirty_marker.mark(self.udid)
                     self._location_dirty = True
                     self._last_clear_succeeded = False
-            await asyncio.wait_for(_invoke(self._simulator.set, sample[1], sample[2],
-                                           _sync_calls=self._pending_sync_calls,
-                                           _executor=self._driver_executor), timeout=self.send_timeout)
+            try:
+                await asyncio.wait_for(_invoke(self._simulator.set, sample[1], sample[2],
+                                               _sync_calls=self._pending_sync_calls,
+                                               _executor=self._driver_executor), timeout=self.send_timeout)
+            except asyncio.TimeoutError as exc:
+                raise asyncio.TimeoutError(f"DVT location send timed out after {self.send_timeout:g}s") from exc
             with self._lock:
                 self._last_send_at = sent_at
                 self._last_send_completed_at = self._wire_clock()
@@ -2721,51 +2791,98 @@ class IOSDeviceBridge:
                 self.physical_sent += 1
                 self.last_delivered_position = {"lat": sample[1], "lon": sample[2]}
 
+    def _check_dvt_connection(self) -> None:
+        task = self._dvt_disconnect_task
+        if task is not None and task.done():
+            task.result()
+            raise ConnectionError("DVT transport disconnected")
+
+    async def _wait_to_retry(self, delay: float) -> None:
+        if self._clear_requested:
+            return
+        try:
+            await asyncio.wait_for(self._retry_wakeup.wait(), timeout=delay)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            self._retry_wakeup.clear()
+
+    def _wake_for_clear(self) -> None:
+        if self._clear_requested:
+            self._retry_wakeup.set()
+            if self._open_task is not None:
+                self._open_task.cancel()
+
     async def _serve(self) -> None:
         next_battery = math.inf
+        retry_delay = self.DISCOVERY_SECONDS
+        self._retry_wakeup = asyncio.Event()
         self._loop = asyncio.get_running_loop()
         self._task = asyncio.current_task()
         try:
             while not self._shutdown.is_set():
                 if self._clear_requested:
+                    self._retry_wakeup.clear()
                     cleared = await self._restore_session(self._clear_deadline)
                     self._complete_clear(cleared)
                     continue
                 if self._fuse_tripped or self._closing or self._recovery_required:
                     await asyncio.sleep(0.05)
                     continue
+                if self.mode == BridgeMode.RECONNECTING and self._simulator is not None:
+                    # A timed-out synchronous write can outlive the failed
+                    # connection. Wait for it before closing and reopening.
+                    await self._disconnect()
+                    if self._simulator is not None:
+                        await self._wait_to_retry(self.RETRY_SECONDS)
+                        continue
                 if self._simulator is None:
                     with self._lock:
                         self.mode = BridgeMode.RECONNECTING if self._ever_connected else BridgeMode.CONNECTING
                         self.reconnect_attempts += 1
                     try:
-                        await self._open_session()
+                        self._open_task = asyncio.create_task(self._open_session())
+                        try:
+                            await self._open_task
+                        except asyncio.CancelledError:
+                            if not self._clear_requested or self._shutdown.is_set():
+                                raise
+                            continue
+                        finally:
+                            self._open_task = None
+                        if self._clear_requested:
+                            continue
                         # Deliver the FIFO head before announcing connection;
                         # later points still need their physical predecessors.
+                        self._check_dvt_connection()
                         sample = self._take_sample(reconnect=True)
                         if sample is not None:
                             await self._send(sample)
+                        self._check_dvt_connection()
                         with self._lock:
                             self.mode = BridgeMode.CONNECTED
                             self.reason = "RSD + DVT location simulation ready"
                             self.last_error = None
                             self._device_error_code = None
                             self._ever_connected = True
+                        retry_delay = self.DISCOVERY_SECONDS
                         next_battery = time.monotonic()+5.0
                     except SpeedFuseError:
                         continue
                     except Exception as exc:
                         await self._disconnect()
                         with self._lock:
-                            self.mode = BridgeMode.SANDBOX_MODE
+                            self.mode = BridgeMode.RECONNECTING if self._simulator is not None else BridgeMode.SANDBOX_MODE
                             self.last_error = _diagnostic_text(f"{type(exc).__name__}: {exc}")
                             self._device_error_code = _device_error_code(exc)
                             self.reason = self.last_error
                         LOGGER.warning("Device connection failed: %s", self.last_error, extra={"fault": True})
-                        delay = self.RETRY_SECONDS if self._ever_connected else self.DISCOVERY_SECONDS
-                        await asyncio.sleep(delay)
+                        await self._wait_to_retry(retry_delay)
+                        retry_delay = min(self.MAX_DISCOVERY_SECONDS, retry_delay*2)
                         continue
+                sample = None
                 try:
+                    self._check_dvt_connection()
                     sample = self._take_sample()
                     if sample is not None:
                         await self._send(sample)
@@ -2781,11 +2898,12 @@ class IOSDeviceBridge:
                         self.mode = BridgeMode.RECONNECTING
                         self._device_error_code = _device_error_code(exc)
                         self.reason = self.last_error = _diagnostic_text(f"{type(exc).__name__}: {exc}")
-                        LOGGER.warning("Location transmission failed: %s", self.last_error, extra={"fault": True})
+                        failure = "Location transmission failed" if sample is not None else "DVT connection lost"
+                        LOGGER.warning("%s: %s", failure, self.last_error, extra={"fault": True})
                         if sample is not None and sample[0] not in self._critical_sequences:
                             self.dropped_device_samples += 1
                     await self._disconnect()
-                    await asyncio.sleep(self.RETRY_SECONDS)
+                    await self._wait_to_retry(self.RETRY_SECONDS)
         finally:
             needs_clear = self._location_dirty or (self._ever_connected and not self._last_clear_succeeded)
             deadline = self._close_deadline if self._close_deadline is not None else time.monotonic()+3.0
@@ -2797,7 +2915,13 @@ class IOSDeviceBridge:
 
     def _worker(self) -> None:
         try:
-            asyncio.run(self._serve())
+            if sys.platform == "win32" and hasattr(asyncio, "Runner"):
+                # Match pymobiledevice3's Windows CLI for Bonjour/RSD while
+                # keeping the selector loop local to this worker thread.
+                with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+                    runner.run(self._serve())
+            else:
+                asyncio.run(self._serve())
         except asyncio.CancelledError:
             LOGGER.debug("device worker cancelled")
         except Exception as exc:
@@ -2846,6 +2970,9 @@ class IOSDeviceBridge:
                 self._clear_requested = True
             future = self._clear_future
             self.connect()
+            if self._loop is not None:
+                with contextlib.suppress(RuntimeError):
+                    self._loop.call_soon_threadsafe(self._wake_for_clear)
         try:
             return bool(future.result(timeout=timeout))
         except FutureTimeoutError:

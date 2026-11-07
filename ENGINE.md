@@ -136,13 +136,16 @@ OU 均值回归观测，均值 0.2 米、相关长度 32 米、平稳标准差 0
 自动探测缓存可以在设备拔出、更换或连接失败时失效并重新枚举；显式 UDID 和未清除的脏会话仍绑定原设备，
 不能为了重连而改用另一部手机。Lockdown 返回身份与选定设备不符时也拒绝接管。
 
-桥接线程首先尝试 `PreferredRsdTunnel`，获得 `RemoteServiceDiscoveryService`，
-再挂载 DDI 并打开 DVT 位置模拟。新版 iOS 的 Cryptex DDI 分发由 `auto_mount` 处理。
-该路线失败时复用本地 Tunneld，或在后台启动当前 Python 环境内的 Tunneld 子进程。
+短暂的 Lockdown 身份检查结束后，桥接线程通过 `PreferredRsdTunnel` 获取 RSD。
+Windows 打包版在桥接线程使用 Selector 事件循环，优先走进程内的 userspace RSD。
+失败后复用本地 Tunneld，或启动 Tunneld 子进程并等待它发布目标 iPhone。
+仍有自建 Tunneld 运行时，重连继续走这条路径，避免同时打开另一条 userspace 隧道。
 启动参数固定在回环地址，使用 TCP；不会交互式提权。进程清理只处理本实例创建的子进程。
+每次新建会话都先在 RSD 上执行 `auto_mount`，由驱动识别已挂载的镜像。iOS 27 的 Cryptex DDI
+同样通过该接口处理。挂载之后开启持久的 DVT 与 `LocationSimulation` 会话。
 随 `main.py` 打包为独立可执行文件时，桥接层通过隐藏的 `--piggy-tunneld` 入口启动
 同一可执行文件的后台子进程；该入口仅允许固定的回环隧道参数或查看帮助，
-调用内置 `pymobiledevice3` 命令后退出，不会创建第二个窗口。
+子进程运行内置的 `pymobiledevice3 remote tunneld`，服务停止后退出。
 源码、冻结入口和自定义命令统一通过受管入口启动，传入 `--parent-pid`；自定义命令由包装器执行。
 子进程每 0.5 秒检查父进程。POSIX 核对 PPID 和存活状态，父进程死亡后终止自己的进程组；
 Windows 持有父进程 SYNCHRONIZE 句柄，并将自己及后代纳入 kill-on-close Job Object。
@@ -156,8 +159,11 @@ Windows 便携包启动时通过 UAC 获取管理员权限，子进程继承该�
 
 安装依赖、Apple 驱动、信任配对、开发者模式或管理员权限不满足时，
 `device.mode` 自动回落 `SANDBOX_MODE`，并在 `reason` / `last_error` 保留原因。
-初次缺少设备时每 2 s 再探测；已连接过的设备发生断线时，失败后的重试间隔为 0.2 s。
-首次 DDI 下载/挂载独立允许 180 s，连接默认 12 s，发送默认 1.5 s。
+正常连接期间不会定时重新枚举设备。DVT 通道关闭或发送失败后，首次重连间隔为 0.2 s，
+连接连续失败后以 2、4、8 s 退避。重连优先发送 FIFO 队首，队列为空时重发最后位置，
+确认发送后才报告恢复连接。
+Windows 上连接各阶段默认 30 s，单次定位发送默认 5 s。其他平台分别为 12 s 和 1.5 s。
+DDI 下载和挂载独立配置 180 s 超时。失败日志区分 USB、RSD、DDI、DVT 通道和坐标发送。
 这些都是可配置参数。同步驱动函数（含同步资源进入/退出）通过有数量上限的守护线程执行器调用，外层超时不再阻塞事件循环；
 返回 awaitable 的同步适配器仍在原事件循环中等待。原生线程不能被异步取消强杀：
 超时的同步 `set()` / `clear()` 会被保留跟踪，结束前不并发发送、关闭其会话或确认恢复成功。

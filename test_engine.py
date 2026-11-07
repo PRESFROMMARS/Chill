@@ -12,7 +12,7 @@ import time
 import unittest
 from email.utils import formatdate
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import engine as e
 
@@ -748,6 +748,8 @@ class BridgeTests(EngineCase):
             async def close(self):
                 calls.append("close:lockdown")
         class Preferred(Resource):
+            udid = "test-udid"
+
             def __init__(self, **kwargs):
                 super().__init__("tunnel")
         class DVT(Resource):
@@ -767,16 +769,22 @@ class BridgeTests(EngineCase):
                 super().__init__("diagnostics")
             async def get_battery(self):
                 return {"CurrentCapacity": 15, "MaxCapacity": 100, "IsCharging": False}
+        class AlreadyMountedError(Exception):
+            pass
         async def lockdown(**kwargs):
             calls.append("lockdown")
             return Lockdown()
         async def auto_mount(provider):
+            mounted = "mount" in calls
             calls.append("mount")
+            if mounted:
+                raise AlreadyMountedError()
         modules = {
             "pymobiledevice3.usbmux": SimpleNamespace(list_devices=lambda: [SimpleNamespace(serial="test-udid")]),
             "pymobiledevice3.lockdown": SimpleNamespace(create_using_usbmux=lockdown),
             "pymobiledevice3.remote.rsd_tunnel": SimpleNamespace(PreferredRsdTunnel=Preferred),
             "pymobiledevice3.services.mobile_image_mounter": SimpleNamespace(auto_mount=auto_mount),
+            "pymobiledevice3.exceptions": SimpleNamespace(AlreadyMountedError=AlreadyMountedError),
             "pymobiledevice3.services.dvt.instruments.location_simulation": SimpleNamespace(LocationSimulation=Simulator),
             "pymobiledevice3.services.diagnostics": SimpleNamespace(DiagnosticsService=Diagnostics),
         }
@@ -801,29 +809,142 @@ class BridgeTests(EngineCase):
                 self.assertEqual(bridge.battery_percent, 15)
                 self.assertTrue(bridge.low_battery)
                 await bridge._send((1, *ORIGIN))
+                self.assertNotIn("close:simulator", calls)
                 await bridge._disconnect(clear=True)
                 self.assertLess(calls.index("close:simulator"), calls.index("close:dvt"))
                 self.assertLess(calls.index("close:dvt"), calls.index("close:tunnel"))
-                self.assertLess(calls.index("close:tunnel"), calls.index("close:lockdown"))
+                self.assertLess(calls.index("close:lockdown"), calls.index("open:tunnel"))
+                self.assertLess(calls.index("mount"), calls.index("open:dvt"))
                 await bridge._open_session()
                 await bridge._disconnect()
             with patch.object(e.importlib, "import_module", side_effect=importer):
                 asyncio.run(exercise())
             bridge.close()  # Release this fixture's exclusive device before the next driver variant.
-            self.assertEqual(calls.count("mount"), 1)
+            self.assertEqual(calls.count("mount"), 2)
             self.assertEqual(bridge.udid, "test-udid")
 
-    def test_partial_dvt_failure_releases_tunnel_and_invalidates_ddi(self):
+    def test_partial_dvt_failure_releases_tunnel(self):
         bridge = e.IOSDeviceBridge(auto_start_tunneld=False)
         self.addCleanup(bridge.close)
         importer, calls = self.fake_driver(fail_dvt=True)
         with patch.object(e.importlib, "import_module", side_effect=importer):
-            with self.assertRaises(OSError):
+            with self.assertRaisesRegex(OSError, "DVT handshake.*DVT refused"):
                 asyncio.run(bridge._open_session())
         self.assertIn("close:dvt", calls)
         self.assertIn("close:tunnel", calls)
         self.assertIn("close:lockdown", calls)
-        self.assertFalse(bridge._mounted_udids)
+
+    def test_ddi_timeout_names_the_stage_and_never_opens_dvt(self):
+        bridge = e.IOSDeviceBridge(auto_start_tunneld=False, mount_timeout=.02)
+        self.addCleanup(bridge.close)
+        importer, calls = self.fake_driver()
+
+        async def slow_mount(provider):
+            await asyncio.sleep(60)
+
+        def modules(name):
+            if name == "pymobiledevice3.services.mobile_image_mounter":
+                return SimpleNamespace(auto_mount=slow_mount)
+            return importer(name)
+
+        with patch.object(e.importlib, "import_module", side_effect=modules):
+            with self.assertRaisesRegex(e.DeviceConnectionError, "iOS 27.0 DDI auto-mount over RSD timed out"):
+                asyncio.run(bridge._open_session())
+        self.assertNotIn("open:dvt", calls)
+        self.assertIn("close:tunnel", calls)
+
+    def test_dvt_disconnect_replays_last_position_before_announcing_reconnect(self):
+        bridge = e.IOSDeviceBridge(auto_start_tunneld=False)
+        self.addCleanup(bridge.close)
+        modes = []
+
+        async def exercise():
+            disconnect = asyncio.Event()
+            sent = asyncio.Event()
+            opens = 0
+
+            class Simulator:
+                async def set(self, lat, lon):
+                    modes.append((bridge.mode, (lat, lon)))
+                    sent.set()
+
+                async def clear(self):
+                    pass
+
+            async def opened():
+                nonlocal opens
+                opens += 1
+                bridge._simulator = Simulator()
+                if opens == 1:
+                    bridge._dvt_disconnect_task = asyncio.create_task(disconnect.wait())
+
+            async def wait_connected():
+                await sent.wait()
+                while bridge.mode != e.BridgeMode.CONNECTED:
+                    await asyncio.sleep(.005)
+
+            with patch.object(bridge, "_open_session", side_effect=opened), self.assertLogs(e.LOGGER, level="WARNING"):
+                worker = asyncio.create_task(bridge._serve())
+                try:
+                    bridge._latest = (1, *ORIGIN)
+                    await asyncio.wait_for(wait_connected(), 1)
+                    sent.clear()
+                    self.assertEqual(bridge.mode, e.BridgeMode.CONNECTED)
+                    self.assertEqual(bridge.snapshot()["pending_samples"], 0)
+                    self.assertIsNone(bridge._take_sample())
+                    disconnect.set()
+                    await asyncio.wait_for(wait_connected(), 2)
+                    self.assertEqual(opens, 2)
+                    self.assertEqual(bridge.mode, e.BridgeMode.CONNECTED)
+                finally:
+                    bridge._shutdown.set()
+                    await worker
+
+        asyncio.run(exercise())
+        self.assertEqual(modes, [(e.BridgeMode.CONNECTING, ORIGIN), (e.BridgeMode.RECONNECTING, ORIGIN)])
+
+    def test_repeated_connection_failures_back_off_even_after_success(self):
+        bridge = e.IOSDeviceBridge(auto_start_tunneld=False)
+        self.addCleanup(bridge.close)
+        bridge._ever_connected = True
+        bridge._last_clear_succeeded = True
+        delays = []
+
+        async def retry(delay):
+            delays.append(delay)
+            if len(delays) == 4:
+                bridge._shutdown.set()
+
+        with patch.object(bridge, "_open_session", new=AsyncMock(side_effect=OSError("device disconnected"))), \
+             patch.object(bridge, "_wait_to_retry", side_effect=retry), self.assertLogs(e.LOGGER, level="WARNING"):
+            asyncio.run(bridge._serve())
+        self.assertEqual(delays, [2, 4, 8, 8])
+
+    def test_explicit_clear_interrupts_an_in_progress_reconnect(self):
+        bridge = e.IOSDeviceBridge(auto_start_tunneld=False)
+        self.addCleanup(bridge.close)
+        bridge._ever_connected = bridge._location_dirty = True
+        connecting, cancelled, cleared = threading.Event(), threading.Event(), threading.Event()
+
+        async def clear():
+            cleared.set()
+
+        async def opened():
+            if not connecting.is_set():
+                connecting.set()
+                try:
+                    await asyncio.sleep(60)
+                finally:
+                    cancelled.set()
+            bridge._simulator = SimpleNamespace(clear=clear)
+
+        with patch.object(bridge, "_open_session", side_effect=opened):
+            bridge.connect()
+            self.assertTrue(connecting.wait(1))
+            self.assertTrue(bridge.clear_location(timeout=1))
+            self.assertTrue(cancelled.is_set())
+            self.assertTrue(cleared.is_set())
+            bridge.close()
 
     def test_reset_failure_is_not_reported_as_success(self):
         bridge = e.IOSDeviceBridge(auto_start_tunneld=False)

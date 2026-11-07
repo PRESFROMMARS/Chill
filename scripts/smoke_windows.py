@@ -15,22 +15,21 @@ def smoke(executable: Path) -> None:
     executable = Path(executable).resolve()
     if not executable.is_file():
         raise ValueError("Missing executable: " + str(executable))
-    # Imports the bundled CLI and remote command tree without creating a tunnel.
+    # Import both transports and the direct DDI/DVT Python APIs without a phone.
     # A Windows GUI executable has no console handles. Supply explicit pipes,
     # exactly as the production bridge does for its private tunnel subprocess.
-    try:
-        helper = subprocess.run([str(executable), "--piggy-tunneld", "--help"],
-                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True, encoding="utf-8",
-                                errors="replace", timeout=60, check=False)
-    except subprocess.TimeoutExpired as error:
-        output = error.output or ""
-        if isinstance(output, bytes):
-            output = output.decode("utf-8", errors="replace")
-        raise RuntimeError("Frozen tunnel CLI timed out: " + output[-4000:]) from error
-    if helper.returncode != 0:
-        raise RuntimeError("Frozen tunnel CLI import check failed: " + str(helper.returncode)
-                           + "\n" + helper.stdout[-4000:])
+    for args in (["--piggy-tunneld", "--help"], ["--piggy-check-device-driver"]):
+        try:
+            helper = subprocess.run([str(executable), *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                                    errors="replace", timeout=60, check=False)
+        except subprocess.TimeoutExpired as error:
+            output = error.output or ""
+            if isinstance(output, bytes):
+                output = output.decode("utf-8", errors="replace")
+            raise RuntimeError(f"Frozen {args[0]} timed out: {output[-4000:]}") from error
+        if helper.returncode != 0:
+            raise RuntimeError(f"Frozen {args[0]} import check failed ({helper.returncode})\n{helper.stdout[-4000:]}")
     with tempfile.TemporaryDirectory(prefix="pace-frozen-smoke-") as directory:
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
@@ -68,7 +67,7 @@ def smoke(executable: Path) -> None:
                 data = json.load(response)
             if not data.get("ok") or data["data"]["state"]["device"]["mode"] != "SANDBOX_MODE":
                 raise RuntimeError("Frozen API is not running a healthy Sandbox")
-            print("Frozen Sandbox: UI, offline assets, authenticated API, and tunnel CLI verified.")
+            print("Frozen Sandbox, tunnel CLI and direct iOS driver imports verified.")
         finally:
             if child.poll() is None:
                 child.terminate()
