@@ -1,5 +1,6 @@
 """Packaging contracts and real ZIP validation, without building a Windows EXE."""
 import hashlib
+import io
 import json
 from pathlib import Path
 import shutil
@@ -9,6 +10,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
+import ddi_support
 from scripts import package_windows as package
 from scripts import smoke_windows as smoke
 
@@ -31,8 +33,10 @@ class WorkflowTests(unittest.TestCase):
         steps = job["steps"]
         commands = "\n".join(step.get("run", "") for step in steps)
         for flag in ("--onedir", "--noconsole", "--uac-admin", "--noupx", "--collect-all pymobiledevice3",
-                     "--recursive-copy-metadata pymobiledevice3", '--add-data "ui:ui"', '--icon "ui/assets/chill.ico"', "--name Chill"):
+                     "--recursive-copy-metadata pymobiledevice3", '--add-data "ui:ui"', '--add-data "assets/ddi:assets/ddi"',
+                     '--icon "ui/assets/chill.ico"', "--name Chill"):
             self.assertIn(flag, commands)
+        self.assertLess(commands.index("--prepare-ddi"), commands.index("python -m PyInstaller"))
         self.assertNotIn("--onefile", commands)
         self.assertIn("scripts/smoke_windows.py", commands)
         self.assertIn("scripts/package_windows.py", commands)
@@ -106,6 +110,21 @@ class SmokeTests(unittest.TestCase):
                 self.assertEqual(run.call_args.args[0], [str(executable.resolve()), "--piggy-check-device-driver"])
 
 
+class DeveloperImageDownloadTests(unittest.TestCase):
+    def test_raw_timeout_and_bad_mirror_fall_back_to_verified_bytes(self):
+        data = b"expected image"
+        digest = (len(data), hashlib.sha256(data).hexdigest())
+        with patch.object(ddi_support.urllib.request, "build_opener") as builder:
+            opener = builder.return_value
+            opener.open.side_effect = [TimeoutError("raw unavailable"), io.BytesIO(b"mirror error"), io.BytesIO(data)]
+            self.assertEqual(ddi_support._download("Cryptex", "Image.dmg", digest), data)
+            requests = opener.open.call_args_list
+        self.assertEqual([request.kwargs["timeout"] for request in requests], [3, 3, 3])
+        self.assertEqual([request.args[0].split("/")[2] for request in requests],
+                         ["raw.githubusercontent.com", "fastly.jsdelivr.net", "testingcf.jsdelivr.net"])
+        self.assertTrue(all(ddi_support.DDI_REVISION in request.args[0] for request in requests))
+
+
 class ArchiveTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="piggy-package-test-")
@@ -114,6 +133,18 @@ class ArchiveTests(unittest.TestCase):
         self.folder.mkdir()
         (self.folder / "Chill.exe").write_bytes(b"MZtest-fixture")
         shutil.copytree(ROOT / "ui", self.folder / "_internal/ui")
+        fixtures = {}
+        for variant, files in ddi_support.DDI_ASSETS.items():
+            folder = self.folder / "_internal" / ddi_support.DDI_ROOT / variant
+            folder.mkdir(parents=True)
+            fixtures[variant] = {}
+            for name in files:
+                data = f"{variant}/{name}".encode()
+                (folder/name).write_bytes(data)
+                fixtures[variant][name] = (len(data), hashlib.sha256(data).hexdigest())
+        patcher = patch.object(ddi_support, "DDI_ASSETS", fixtures)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.output = self.folder.parent / package.ARCHIVE_NAME
 
     def test_complete_folder_archived_with_docs_hidden_files_and_verified_hashes(self):
@@ -122,6 +153,9 @@ class ArchiveTests(unittest.TestCase):
         with zipfile.ZipFile(self.output) as archive:
             self.assertIsNone(archive.testzip())
             names = set(archive.namelist())
+            for variant, files in ddi_support.DDI_ASSETS.items():
+                for name in files:
+                    self.assertIn(f"_internal/assets/ddi/{variant}/{name}", names)
             for name in ("Chill.exe", "_internal/ui/index.html", "_internal/ui/vendor/leaflet.js",
                          "_internal/ui/vendor/leaflet.css", "_internal/ui/vendor/LEAFLET-LICENSE.txt",
                          "README_FOR_HER.md", "artifacts/piggy-desktop-zh.jpg", "_internal/.needed",
@@ -139,6 +173,12 @@ class ArchiveTests(unittest.TestCase):
         bundled = self.folder / "_internal/ui/index.html"
         bundled.write_text("stale", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "stale"):
+            package.package_distribution(self.folder, self.output)
+        self.assertFalse(self.output.exists())
+
+    def test_packaging_rejects_a_missing_cryptex_payload(self):
+        (self.folder / "_internal/assets/ddi/Cryptex/Image.dmg.root_hash").unlink()
+        with self.assertRaisesRegex(ValueError, "Cryptex/Image.dmg.root_hash"):
             package.package_distribution(self.folder, self.output)
         self.assertFalse(self.output.exists())
 

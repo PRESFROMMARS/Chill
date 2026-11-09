@@ -106,7 +106,8 @@ python scripts/verify_alignment.py
 - macOS 启动 `caffeinate -di -w <主进程 PID>` 防止显示器和系统闲置休眠；正常退出会回收该子进程，
   主进程异常退出后绑定的断言也会释放。保护启动失败或提前退出会报告防休眠失败。
 - 本地界面服务只监听回环地址。Windows 便携包启动时由系统显示管理员授权提示。
-- Windows 查询 `Apple Mobile Device Service`。缺少驱动或服务停止时给出中文或英文提示。
+- Windows 真机模式会检查 `Apple Mobile Device Service`，将已安装但停止的服务设为自动并尝试启动。
+  缺少驱动或自动启动失败时才显示对应提示。
 - 真机还需要设备信任配对、开发者模式与适用驱动。缺失条件时引擎回退沙盒。
 - 多台设备同时连接且未指定 UDID 时直接拒绝自动选择。连接准备阶段也显示具体的驱动、权限或隧道错误。
   自动缓存可在安全状态下失效重选；存在未恢复定位的脏会话时必须重新连接原手机。
@@ -162,13 +163,19 @@ python scripts/verify_alignment.py
 生成文件哈希清单并压缩。
 文件夹打包不能保证消除安全软件的全部误报；本项目没有代码签名证书。
 
-也可以在 Windows 源码目录安装 `requirements-build.txt` 后，使用工作流中的
-PyInstaller 命令构建，再运行：
+在 Windows 源码目录安装 `requirements-build.txt` 后，先准备离线镜像，再运行工作流中的
+PyInstaller 命令。工作流会把两套镜像从 `assets/ddi/` 打进 `_internal/assets/ddi/`。
 
 ```powershell
+python scripts/package_windows.py --prepare-ddi
+# 在此运行工作流中的 PyInstaller 命令。
 python scripts/smoke_windows.py dist/Chill/Chill.exe
 python scripts/package_windows.py
 ```
+
+发行包直接使用校验通过的驱动缓存或内置镜像。iOS 27 真机使用 Cryptex 时也从本地读取镜像，
+首次个性化可能仍需访问 Apple TSS 签名服务。构建和未打包的源码可在下载失败时自动尝试镜像站，
+所有镜像文件均以固定上游修订和 SHA-256 校验。
 
 Windows 便携包需要 Apple Devices 驱动、设备信任与开发者模式；首次使用还可能需要
 Microsoft WebView2 Runtime。Windows EXE 需要在 Windows 环境构建，Mac 验证不代表真机验收。

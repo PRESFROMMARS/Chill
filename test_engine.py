@@ -1,5 +1,6 @@
 """Offline numerical, state-machine and mocked device-transport regression tests."""
 import asyncio
+import hashlib
 import importlib
 import math
 import os
@@ -7,12 +8,13 @@ from pathlib import Path
 import random
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
 from email.utils import formatdate
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import engine as e
 
@@ -729,6 +731,50 @@ class MultiLapTests(EngineCase):
 
 
 class BridgeTests(EngineCase):
+    def test_frozen_mount_uses_validated_cache_or_bundled_image_without_downloading(self):
+        bridge = e.IOSDeviceBridge(sandbox=True)
+        self.addCleanup(bridge.close)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = root/"home"
+            cached = home/"Xcode_iOS_DDI_Personalized"
+            bundled = root/e.ddi_support.DDI_ROOT/"Cryptex"
+            assets = {}
+            for variant, folder in (("Personalized", cached), ("Cryptex", bundled)):
+                folder.mkdir(parents=True)
+                assets[variant] = {}
+                for name in e.ddi_support.DDI_ASSETS[variant]:
+                    data = name.encode()
+                    local_name = "Image.trustcache" if variant == "Personalized" and name.endswith(".trustcache") else name
+                    (folder/local_name).write_bytes(data)
+                    assets[variant][name] = (len(data), hashlib.sha256(data).hexdigest())
+
+            mounter = MagicMock()
+            image = mounter.return_value.__aenter__.return_value
+            image.mount = AsyncMock()
+            image.raise_if_cannot_mount = AsyncMock()
+            cryptex = MagicMock()
+            cryptex.return_value.auto_install_ddi = AsyncMock()
+            modules = {
+                "pymobiledevice3.common": SimpleNamespace(get_home_folder=lambda: home),
+                "pymobiledevice3.services.mobile_image_mounter": SimpleNamespace(
+                    uses_cryptex_image=lambda provider: provider == "ios27", PersonalizedImageMounter=mounter),
+                "pymobiledevice3.services.cryptexd": SimpleNamespace(CryptexdService=cryptex),
+            }
+            with patch.object(e.sys, "_MEIPASS", str(root), create=True), patch.object(e.sys, "frozen", True, create=True), \
+                 patch.object(e.importlib, "import_module", side_effect=modules.__getitem__), \
+                 patch.object(e.ddi_support, "DDI_ASSETS", assets), \
+                 patch.object(e.ddi_support, "prepare_image") as download:
+                asyncio.run(bridge._mount_developer_image("ios26"))
+                asyncio.run(bridge._mount_developer_image("ios27"))
+                (bundled/"Image.dmg.root_hash").unlink()
+                with self.assertRaisesRegex(ValueError, "Cryptex/Image.dmg.root_hash"):
+                    asyncio.run(bridge._mount_developer_image("ios27"))
+            download.assert_not_called()
+            image.mount.assert_awaited_once_with(cached/"Image.dmg", cached/"BuildManifest.plist",
+                                                 cached/"Image.trustcache")
+            cryptex.return_value.auto_install_ddi.assert_awaited_once_with(restore_dir=bundled)
+
     def fake_driver(self, *, legacy=False, clear_fails=False, fail_dvt=False):
         calls = []
         class Resource:
@@ -774,16 +820,19 @@ class BridgeTests(EngineCase):
         async def lockdown(**kwargs):
             calls.append("lockdown")
             return Lockdown()
-        async def auto_mount(provider):
-            mounted = "mount" in calls
-            calls.append("mount")
-            if mounted:
+        class ImageMounter(Resource):
+            def __init__(self, provider):
+                super().__init__("image")
+
+            async def raise_if_cannot_mount(self):
+                calls.append("mount")
                 raise AlreadyMountedError()
         modules = {
             "pymobiledevice3.usbmux": SimpleNamespace(list_devices=lambda: [SimpleNamespace(serial="test-udid")]),
             "pymobiledevice3.lockdown": SimpleNamespace(create_using_usbmux=lockdown),
             "pymobiledevice3.remote.rsd_tunnel": SimpleNamespace(PreferredRsdTunnel=Preferred),
-            "pymobiledevice3.services.mobile_image_mounter": SimpleNamespace(auto_mount=auto_mount),
+            "pymobiledevice3.services.mobile_image_mounter": SimpleNamespace(
+                uses_cryptex_image=lambda provider: True, PersonalizedImageMounter=ImageMounter),
             "pymobiledevice3.exceptions": SimpleNamespace(AlreadyMountedError=AlreadyMountedError),
             "pymobiledevice3.services.dvt.instruments.location_simulation": SimpleNamespace(LocationSimulation=Simulator),
             "pymobiledevice3.services.diagnostics": SimpleNamespace(DiagnosticsService=Diagnostics),
@@ -841,14 +890,9 @@ class BridgeTests(EngineCase):
 
         async def slow_mount(provider):
             await asyncio.sleep(60)
-
-        def modules(name):
-            if name == "pymobiledevice3.services.mobile_image_mounter":
-                return SimpleNamespace(auto_mount=slow_mount)
-            return importer(name)
-
-        with patch.object(e.importlib, "import_module", side_effect=modules):
-            with self.assertRaisesRegex(e.DeviceConnectionError, "iOS 27.0 DDI auto-mount over RSD timed out"):
+        with patch.object(e.importlib, "import_module", side_effect=importer), \
+             patch.object(bridge, "_mount_developer_image", side_effect=slow_mount):
+            with self.assertRaisesRegex(e.DeviceConnectionError, "iOS 27.0 DDI mount over RSD timed out"):
                 asyncio.run(bridge._open_session())
         self.assertNotIn("open:dvt", calls)
         self.assertIn("close:tunnel", calls)

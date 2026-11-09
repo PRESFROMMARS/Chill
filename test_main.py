@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import unittest
 import urllib.error
 import urllib.request
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import engine
 import main
@@ -472,6 +472,28 @@ class SearchTests(APICase):
 
 
 class WindowsTests(unittest.TestCase):
+    def test_stopped_driver_is_configured_and_verified_before_discovery(self):
+        protection = main.WindowsProtection()
+        name = "Apple Mobile Device Service"
+        stopped = SimpleNamespace(returncode=0, stdout="STATE : 1 STOPPED")
+        pending = SimpleNamespace(returncode=0, stdout="STATE : 2 START_PENDING")
+        running = SimpleNamespace(returncode=0, stdout="STATE : 4 RUNNING")
+        ok = SimpleNamespace(returncode=0, stdout="")
+        with patch.object(protection, "_quiet", side_effect=[stopped, ok, ok, pending, running]) as command:
+            self.assertEqual(protection._prepare_apple_service(), "running")
+        self.assertEqual(command.call_args_list[:3], [
+            call(["sc.exe", "query", name]), call(["sc.exe", "config", name, "start=", "auto"], timeout=3),
+            call(["sc.exe", "start", name], timeout=3)])
+        self.assertEqual(command.call_count, 5)
+
+    def test_driver_reports_stopped_when_windows_denies_start(self):
+        protection = main.WindowsProtection()
+        stopped = SimpleNamespace(returncode=0, stdout="STATE : 1 STOPPED")
+        denied = SimpleNamespace(returncode=5, stdout="")
+        with patch.object(protection, "_quiet", side_effect=[stopped, denied, denied, stopped]), \
+             self.assertLogs(main.LOGGER, level="WARNING"):
+            self.assertEqual(protection._prepare_apple_service(), "stopped")
+
     def test_windows_startup_queries_driver_without_changing_firewall(self):
         protection = main.WindowsProtection()
         protection._stop.set()

@@ -51,6 +51,7 @@ from contextlib import AsyncExitStack
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
+import ddi_support
 from runtime_support import DaemonDriverExecutor, InstanceRunningError, ProcessFileLock, device_lock, redact_diagnostics
 
 __all__ = ["check_ntp_offset", "TimeSyncError", "wgs84_to_gcj02", "gcj02_to_wgs84",
@@ -2004,8 +2005,10 @@ class IOSDeviceBridge:
                  low_battery_percent: float = 20.0,
                  tunneld_command: Optional[Sequence[str]] = None,
                  clock: Optional[Callable[[], float]] = None,
+                 before_discovery: Optional[Callable[[], None]] = None,
                  dirty_marker: Optional[DirtySessionMarker] = None):
         self._dirty_marker = dirty_marker
+        self._before_discovery = before_discovery
         self._requested_udid = udid
         if dirty_marker is not None and dirty_marker.pending and udid not in (None, dirty_marker.udid):
             raise ValueError("recovery must target the device in the dirty-session marker")
@@ -2354,6 +2357,9 @@ class IOSDeviceBridge:
             lease.close()
 
     async def _select_device(self) -> str:
+        if self._before_discovery is not None:
+            await asyncio.wait_for(_invoke(self._before_discovery, _executor=self._driver_executor),
+                                   timeout=self.connect_timeout)
         usbmux = importlib.import_module("pymobiledevice3.usbmux")
         devices = await asyncio.wait_for(_invoke(usbmux.list_devices, _executor=self._driver_executor), timeout=self.connect_timeout)
         serials = {device.serial.replace("-", "").casefold(): device.serial for device in devices}
@@ -2496,6 +2502,39 @@ class IOSDeviceBridge:
         stack.push_async_callback(preferred_stack.aclose)
         return provider
 
+    @staticmethod
+    def _ddi_files(variant: str) -> dict[str, Path]:
+        bundled = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))/ddi_support.DDI_ROOT/variant
+        common = importlib.import_module("pymobiledevice3.common")
+        home = None
+        try:
+            home = common.get_home_folder()
+            cache = home/f"Xcode_iOS_DDI_{variant}"
+            return ddi_support.image_files(cache, variant, driver_cache=True)
+        except (OSError, ValueError):
+            pass
+        try:
+            return ddi_support.image_files(bundled, variant)
+        except ValueError:
+            if getattr(sys, "frozen", False) or home is None:
+                raise
+        # Source checkouts can fill a separate cache without changing the
+        # developer image used by other pymobiledevice3 applications.
+        return ddi_support.prepare_image(home/"Chill-DDI"/ddi_support.DDI_REVISION/variant, variant)
+
+    async def _mount_developer_image(self, provider: Any) -> None:
+        mounter = importlib.import_module("pymobiledevice3.services.mobile_image_mounter")
+        if mounter.uses_cryptex_image(provider):
+            async with mounter.PersonalizedImageMounter(provider) as image:
+                await image.raise_if_cannot_mount()
+            files = await _invoke(self._ddi_files, "Cryptex", _executor=self._driver_executor)
+            cryptex = importlib.import_module("pymobiledevice3.services.cryptexd")
+            await cryptex.CryptexdService(provider).auto_install_ddi(restore_dir=files["BuildManifest.plist"].parent)
+        else:
+            files = await _invoke(self._ddi_files, "Personalized", _executor=self._driver_executor)
+            async with mounter.PersonalizedImageMounter(provider) as image:
+                await image.mount(files["Image.dmg"], files["BuildManifest.plist"], files["Image.dmg.trustcache"])
+
     async def _open_session(self) -> None:
         stack = AsyncExitStack()
         try:
@@ -2523,13 +2562,11 @@ class IOSDeviceBridge:
             with self._lock:
                 self.udid, self.ios_version = selected, version
             provider = await self._open_rsd(stack, selected)
-            with self._connection_stage("ddi", f"iOS {version} DDI auto-mount over RSD", self.mount_timeout):
-                mounter = importlib.import_module("pymobiledevice3.services.mobile_image_mounter")
+            with self._connection_stage("ddi", f"iOS {version} DDI mount over RSD", self.mount_timeout):
                 # Let the driver check the phone again on every new session.
                 # A cached UDID cannot tell us whether the phone rebooted.
                 try:
-                    await asyncio.wait_for(_invoke(mounter.auto_mount, provider, _executor=self._driver_executor),
-                                           timeout=self.mount_timeout)
+                    await asyncio.wait_for(self._mount_developer_image(provider), timeout=self.mount_timeout)
                 except Exception as exc:
                     try:
                         exceptions = importlib.import_module("pymobiledevice3.exceptions")

@@ -9,6 +9,7 @@ build/
 dist/
 Pace.spec
 Chill.spec
+/assets/ddi/
 
 # Local design state, input photos, generated audit output and old source snapshots.
 .taste-skill/

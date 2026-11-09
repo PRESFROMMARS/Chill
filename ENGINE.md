@@ -141,8 +141,9 @@ Windows 打包版在桥接线程使用 Selector 事件循环，优先走进程�
 失败后复用本地 Tunneld，或启动 Tunneld 子进程并等待它发布目标 iPhone。
 仍有自建 Tunneld 运行时，重连继续走这条路径，避免同时打开另一条 userspace 隧道。
 启动参数固定在回环地址，使用 TCP；不会交互式提权。进程清理只处理本实例创建的子进程。
-每次新建会话都先在 RSD 上执行 `auto_mount`，由驱动识别已挂载的镜像。iOS 27 的 Cryptex DDI
-同样通过该接口处理。挂载之后开启持久的 DVT 与 `LocationSimulation` 会话。
+每次新建会话都先在 RSD 上检查和挂载 DDI，再开启持久的 DVT 与 `LocationSimulation` 会话。
+按设备能力选择 Personalized 或 Cryptex，并将通过 SHA-256 校验的本地路径显式交给驱动。
+冻结版内置这两套镜像；首次安装所需的 Apple TSS 个性化签名仍由驱动处理。
 随 `main.py` 打包为独立可执行文件时，桥接层通过隐藏的 `--piggy-tunneld` 入口启动
 同一可执行文件的后台子进程；该入口仅允许固定的回环隧道参数或查看帮助，
 子进程运行内置的 `pymobiledevice3 remote tunneld`，服务停止后退出。

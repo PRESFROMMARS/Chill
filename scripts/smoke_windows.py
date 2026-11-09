@@ -15,7 +15,7 @@ def smoke(executable: Path) -> None:
     executable = Path(executable).resolve()
     if not executable.is_file():
         raise ValueError("Missing executable: " + str(executable))
-    # Import both transports and the direct DDI/DVT Python APIs without a phone.
+    # Import both transports and validate the pinned images without a phone.
     # A Windows GUI executable has no console handles. Supply explicit pipes,
     # exactly as the production bridge does for its private tunnel subprocess.
     for args in (["--piggy-tunneld", "--help"], ["--piggy-check-device-driver"]):
@@ -67,7 +67,7 @@ def smoke(executable: Path) -> None:
                 data = json.load(response)
             if not data.get("ok") or data["data"]["state"]["device"]["mode"] != "SANDBOX_MODE":
                 raise RuntimeError("Frozen API is not running a healthy Sandbox")
-            print("Frozen Sandbox, tunnel CLI and direct iOS driver imports verified.")
+            print("Frozen Sandbox, tunnel CLI, iOS driver and offline DDI assets verified.")
         finally:
             if child.poll() is None:
                 child.terminate()

@@ -12,6 +12,10 @@ from typing import Optional
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+if not __package__:
+    sys.path.insert(0, str(ROOT))
+import ddi_support
+
 ARCHIVE_NAME = "Chill-Windows-Portable.zip"
 
 
@@ -34,6 +38,8 @@ def validate_distribution(folder: Path, source: Path = ROOT) -> list[Path]:
     for path in folder.rglob("*"):
         if path.is_symlink():
             raise ValueError("Portable Windows distributions must not contain symbolic links")
+    for variant in ddi_support.DDI_ASSETS:
+        ddi_support.image_files(folder / "_internal" / ddi_support.DDI_ROOT / variant, variant)
     return assets
 
 
@@ -91,8 +97,14 @@ def main() -> int:
     parser.add_argument("--folder", type=Path, default=ROOT / "dist/Chill")
     parser.add_argument("--output", type=Path, default=ROOT / "dist" / ARCHIVE_NAME)
     parser.add_argument("--dependencies", type=Path)
+    parser.add_argument("--prepare-ddi", action="store_true", help="stage verified offline images before PyInstaller")
     args = parser.parse_args()
     try:
+        if args.prepare_ddi:
+            for variant in ddi_support.DDI_ASSETS:
+                ddi_support.prepare_image(ROOT / ddi_support.DDI_ROOT / variant, variant)
+                print(f"Verified DDI assets: {variant} ({ddi_support.DDI_REVISION})")
+            return 0
         output = package_distribution(args.folder, args.output, dependencies=args.dependencies)
     except (OSError, ValueError, zipfile.BadZipFile) as error:
         parser.exit(1, "Packaging failed: " + str(error) + "\n")

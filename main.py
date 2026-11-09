@@ -27,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
 import urllib.parse
 import urllib.request
+import ddi_support
 from runtime_support import BoundedFaultLog, InstanceRunningError, ParentWatchdog
 
 LOGGER = logging.getLogger("piggy")
@@ -189,6 +190,7 @@ class WindowsProtection:
 
     def __init__(self):
         self._stop = threading.Event()
+        self._driver_checked = threading.Event()
         self._lock = threading.Lock()
         self._thread = None
         self._caffeinate = None
@@ -207,7 +209,7 @@ class WindowsProtection:
                               timeout=timeout, check=False, shell=False,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
-    def start(self) -> None:
+    def start(self, *, prepare_driver: bool = True) -> None:
         if sys.platform == "darwin":
             with self._lock:
                 if self._stop.is_set() or self._caffeinate is not None and self._caffeinate.poll() is None:
@@ -224,14 +226,66 @@ class WindowsProtection:
             return
         if sys.platform != "win32":
             return
-        self._thread = threading.Thread(target=self._run, name="PiggyWindowsProtection", daemon=True)
+        self._thread = threading.Thread(target=self._run, args=(prepare_driver,),
+                                        name="PiggyWindowsProtection", daemon=True)
         self._thread.start()
 
     def _set(self, **values: Any) -> None:
         with self._lock:
             self.status.update(values)
 
-    def _run(self) -> None:
+    def wait_for_driver(self) -> None:
+        if self._thread is not None:
+            self._driver_checked.wait()
+
+    def _prepare_apple_service(self) -> str:
+        name = "Apple Mobile Device Service"
+        query = ["sc.exe", "query", name]
+
+        def state(result):
+            match = re.search(r"^\s*STATE\s*:\s*([1-7])\b", result.stdout, re.MULTILINE | re.IGNORECASE)
+            return int(match.group(1)) if result.returncode == 0 and match else None
+
+        service = self._quiet(query)
+        if service.returncode == 1060:
+            return "missing"
+        current = state(service)
+        if current == 4:
+            return "running"
+        if current is None:
+            LOGGER.warning("Apple Mobile Device Service query failed (exit %s)", service.returncode)
+            return "stopped"
+        self._set(driver="starting")
+        if current != 2:  # SERVICE_START_PENDING
+            try:
+                configured = self._quiet(["sc.exe", "config", name, "start=", "auto"], timeout=3)
+                if configured.returncode:
+                    LOGGER.warning("Could not set Apple Mobile Device Service to automatic (exit %s)", configured.returncode)
+            except subprocess.TimeoutExpired:
+                LOGGER.warning("Setting Apple Mobile Device Service to automatic timed out")
+            try:
+                started = self._quiet(["sc.exe", "start", name], timeout=3)
+            except subprocess.TimeoutExpired:
+                pass  # The service may still start after sc.exe times out.
+            else:
+                if started.returncode not in (0, 1056):  # already running
+                    LOGGER.warning("Could not start Apple Mobile Device Service (exit %s)", started.returncode)
+                    return "running" if state(self._quiet(query)) == 4 else "stopped"
+        deadline = time.monotonic()+8.0
+        while not self._stop.is_set():
+            remaining = deadline-time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                if state(self._quiet(query, timeout=min(remaining, 1.0))) == 4:
+                    return "running"
+            except subprocess.TimeoutExpired:
+                pass
+            self._stop.wait(min(.25, max(0.0, deadline-time.monotonic())))
+        LOGGER.warning("Apple Mobile Device Service did not reach RUNNING within 8 seconds")
+        return "stopped"
+
+    def _run(self, prepare_driver: bool = True) -> None:
         kernel = None
         try:
             kernel = ctypes.windll.kernel32
@@ -241,16 +295,13 @@ class WindowsProtection:
         except (AttributeError, OSError):
             self._set(awake="failed")
         try:
-            service = self._quiet(["sc.exe", "query", "Apple Mobile Device Service"])
-            if service.returncode == 1060:
-                status = "missing"
-            elif service.returncode == 0:
-                status = "running" if "RUNNING" in service.stdout.upper() else "stopped"
-            else:
-                status = "unknown"
-            self._set(driver=status)
+            if prepare_driver:
+                self._set(driver=self._prepare_apple_service())
         except (OSError, subprocess.SubprocessError):
-            self._set(driver="unknown")
+            LOGGER.warning("Apple Mobile Device Service could not be prepared", exc_info=True)
+            self._set(driver="stopped")
+        finally:
+            self._driver_checked.set()
         self._stop.wait()
         if kernel is not None:
             try:
@@ -266,6 +317,7 @@ class WindowsProtection:
 
     def close(self) -> None:
         self._stop.set()
+        self._driver_checked.set()
         with self._lock:
             child, self._caffeinate = self._caffeinate, None
         if child is not None:
@@ -414,10 +466,11 @@ class DesktopAPI:
 
     def _new_bridge(self):
         return engine.IOSDeviceBridge(sandbox=self._sandbox,
+                                      before_discovery=self._protection.wait_for_driver if sys.platform == "win32" else None,
                                       dirty_marker=None if self._sandbox else self._dirty_marker)
 
     def _start_services(self) -> None:
-        self._protection.start()
+        self._protection.start(prepare_driver=not self._sandbox)
         if not self._recovery_required:
             self._bridge.connect()
         elif not self._sandbox and self._dirty_marker.udid is not None:
@@ -1106,14 +1159,19 @@ def _check_device_driver_imports() -> int:
     try:
         from pymobiledevice3.remote.rsd_tunnel import PreferredRsdTunnel
         from pymobiledevice3.remote.userspace_tunnel import UserspaceRsdTunnel
-        from pymobiledevice3.services.cryptexd import CryptexdService
+        from pymobiledevice3.services.cryptexd import CryptexdService, load_cryptex1_assets
         from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
         from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
-        from pymobiledevice3.services.mobile_image_mounter import auto_mount
+        from pymobiledevice3.services.mobile_image_mounter import PersonalizedImageMounter, uses_cryptex_image
 
         if not all(callable(entry) for entry in (PreferredRsdTunnel, UserspaceRsdTunnel, CryptexdService.auto_install_ddi,
-                                                  DvtProvider, LocationSimulation.set, auto_mount)):
+                                                  DvtProvider, LocationSimulation.set,
+                                                  PersonalizedImageMounter.mount, uses_cryptex_image)):
             raise RuntimeError("incomplete device driver API")
+        root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))/ddi_support.DDI_ROOT
+        for variant in ddi_support.DDI_ASSETS:
+            ddi_support.image_files(root/variant, variant)
+        load_cryptex1_assets(root/"Cryptex")
     except Exception:
         LOGGER.exception("Packaged device driver import check failed")
         return 1

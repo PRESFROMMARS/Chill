@@ -58,6 +58,9 @@ jobs:
           node test_ui.js
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Prepare offline iPhone developer images
+        run: python scripts/package_windows.py --prepare-ddi
+
       - name: Build the folder distribution
         # Keep these explicit. A single-file executable is deliberately disallowed.
         run: |
@@ -72,6 +75,7 @@ jobs:
             --icon "ui/assets/chill.ico" `
             --contents-directory _internal `
             --add-data "ui:ui" `
+            --add-data "assets/ddi:assets/ddi" `
             --collect-all pymobiledevice3 `
             --recursive-copy-metadata pymobiledevice3 `
             --collect-all webview `
@@ -83,7 +87,7 @@ jobs:
           python -m pip freeze | Set-Content -Encoding utf8 build/dependencies-windows.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Smoke test the frozen Sandbox, daemon entry, and iOS driver imports
+      - name: Smoke test the frozen Sandbox, daemon, iOS driver and offline images
         run: python scripts/smoke_windows.py dist/Chill/Chill.exe
 
       - name: Validate and archive the complete folder
