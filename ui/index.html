@@ -443,7 +443,12 @@
       device_developer_mode_required:'请在 iPhone 的「设置 → 隐私与安全性 → 开发者模式」中开启，重启并确认开启。',
       tunnel_admin_required:'请关闭 Chill，右键点击 Chill.exe，选择「以管理员身份运行」，在 Windows 提示中选择「是」。',
       operation_in_progress:'正在准备路线，请等待当前操作完成。',api_timeout:'操作响应超时，后台可能仍在处理。请等待状态更新后再重试。',multiple_devices:'检测到多台设备，请只保留一台或指定设备。',device_unavailable:'目标手机未连接，请连接原设备后重试。',tunnel_unavailable:'开发者隧道不可用，请根据下方具体原因检查权限、驱动或设备连接。',device_connection_failed:'手机连接失败，请查看下方具体原因。',
-      device_required:'真机模式需要先连接手机，无法连接时请使用沙盒预览。',
+      device_usb_checking:'正在通过 USB 查找 iPhone。请保持数据线连接，稍后再锁定起点。',
+      device_usb_not_detected:'USB 未检测到 iPhone。请确认 Windows 已安装 Apple 设备或 iTunes，插好支持数据传输的 USB 线，解锁 iPhone 并点「信任此电脑」。',
+      device_pairing_unready:'USB 已识别到 iPhone，配对尚未就绪。请解锁 iPhone，重新插线并点「信任此电脑」。',
+      device_rsd_unready:'已识别到 iPhone，RSD 调试隧道尚未就绪。若持续出现，请以管理员身份运行 Chill，并确认 iPhone 已开启「开发者模式」、重启后已确认开启。',
+      device_ddi_unready:'已识别到 iPhone，开发者镜像（DDI）尚未就绪。首次挂载可能需要等待。若持续出现，请检查电脑网络、管理员权限，并确认 iPhone 已开启「开发者模式」、重启后已确认开启。',
+      device_dvt_unready:'已识别到 iPhone，DVT 定位通道尚未就绪。若持续出现，请以管理员身份运行 Chill，并确认 iPhone 已开启「开发者模式」、重启后已确认开启。',
       instance_running:'检测到另一个程序实例正在运行，请勿多开。请先关闭控制此手机的另一个窗口。',route_too_complex:'路线过长或锚点过于密集，已安全取消计算。请缩短路线或减少选点后重试。',
       recoveryNotice:'上次异常退出，定位可能未恢复。请连接上次使用的 iPhone，并先恢复真实定位。',recoverPreviousLocation:'连接上次设备并恢复定位',recoveringLocation:'正在恢复上次定位',previousLocationRecovered:'上次会话的恢复指令已发送。',recovery_required:'请先恢复上次会话的真实定位，再开始新会话。',recovery_busy:'正在恢复上次会话，请稍候。',recovery_sandbox:'沙盒不会连接手机。请使用真机模式恢复上次定位。',recovery_invalid:'上次会话标记无法读取，无法确认目标设备。请联系维护者核查后恢复。',
       control_cooldown:'操作过快，请等待一点五秒后重试。',speedFuseNote:'坐标发送已被速度熔断器阻止，当前里程仅为本机模拟。请保持连接并执行安全结算。',fuseBlocked:'坐标发送已熔断',deliveryLateNote:'坐标发送出现延迟，无法保证手机端收到完整轨迹。请检查连接状态。',
@@ -490,7 +495,12 @@
       device_developer_mode_required:'On your iPhone, open Settings → Privacy & Security → Developer Mode. Turn it on, restart, and confirm.',
       tunnel_admin_required:'Close Chill, right click Chill.exe, choose Run as administrator, and select Yes at the Windows prompt.',
       operation_in_progress:'Preparing the route. Wait for the current operation to finish.',api_timeout:'The response timed out. The backend may still be working; wait for a status update before retrying.',multiple_devices:'Multiple devices detected. Keep only one connected or specify a device.',device_unavailable:'The selected phone is unavailable. Connect the original device and retry.',tunnel_unavailable:'The developer tunnel is unavailable. Check the diagnostic below for permissions, drivers or connection issues.',device_connection_failed:'The phone could not connect. See the diagnostic below.',
-      device_required:'Device mode requires a connected phone. Use sandbox preview when a device is unavailable.',
+      device_usb_checking:'Looking for your iPhone over USB. Keep it plugged in and try locking the start again in a moment.',
+      device_usb_not_detected:'USB could not detect an iPhone. Check that Apple Devices or iTunes is installed on Windows, connect a USB data cable, unlock the iPhone, and tap Trust This Computer.',
+      device_pairing_unready:'USB detected your iPhone. To finish pairing, unlock it, reconnect the cable, and tap Trust This Computer.',
+      device_rsd_unready:'Your iPhone was detected. The RSD developer tunnel is still unavailable. If this continues, run Chill as administrator and confirm Developer Mode is enabled on the iPhone after restarting it.',
+      device_ddi_unready:'Your iPhone was detected. The developer disk image (DDI) is still unavailable. The first mount can take time. If this continues, check the internet connection and administrator permissions, and confirm Developer Mode is enabled on the iPhone after restarting it.',
+      device_dvt_unready:'Your iPhone was detected. The DVT location channel is still unavailable. If this continues, run Chill as administrator and confirm Developer Mode is enabled on the iPhone after restarting it.',
       instance_running:'Another instance controls this phone. Close its other window before connecting.',route_too_complex:'The route is too long or dense. Calculation was safely cancelled; shorten the route or remove points and retry.',
       recoveryNotice:'The previous session did not confirm location restoration. Connect the same iPhone and restore its location before starting.',recoverPreviousLocation:'Connect and restore the previous iPhone',recoveringLocation:'Restoring the previous location',previousLocationRecovered:'Restore command sent for the previous session.',recovery_required:'Restore the previous location session before starting a new one.',recovery_busy:'The previous location session is being restored. Please wait.',recovery_sandbox:'Sandbox cannot connect to an iPhone. Use device mode to restore the previous location.',recovery_invalid:'The previous session marker is unreadable. The target device cannot be identified. Contact the maintainer for recovery.',
       control_cooldown:'Please wait 1.5 seconds before another motion command.',speedFuseNote:'The speed fuse blocked coordinate transmission. Distance is simulated locally. Keep the device connected and settle the session.',fuseBlocked:'Coordinate transmission blocked',deliveryLateNote:'Coordinate delivery is delayed. Complete delivery to the phone cannot be guaranteed. Check the connection.',
@@ -926,10 +936,10 @@
     $('recover-previous').textContent=t(s.recovering?'recoveringLocation':'recoverPreviousLocation');
     $('recover-previous').disabled=model.busy||!model.connected||s.recovering||s.recovery_invalid||s.recovery_sandbox;
     const phase=s.pause_phase||'running';
-    const active=s.session_active,connected=s.device.mode==='CONNECTED'&&!s.device.speed_fuse_tripped,cruising=['CRUISING_LOOP','CRUISING_DETOUR'].includes(s.state),locked=s.state==='LOCKED_START';
+    const active=s.session_active,connected=s.device.device_ready,cruising=['CRUISING_LOOP','CRUISING_DETOUR'].includes(s.state),locked=s.state==='LOCKED_START';
     const startLabel={injecting:'start_injecting',countdown:'countdown',ready:'cruiseReady',interrupted:'state_LOCKED_START'}[s.start_phase];
     const startReady=locked&&s.start_phase==='ready';
-    let badge=s.restore_dispatched?'restored':connected?(active?'connected':'deviceReady'):['CONNECTING','RECONNECTING'].includes(s.device.mode)?'deviceConnecting':'sandbox';
+    let badge=connected?(active?'connected':'deviceReady'):['CONNECTING','RECONNECTING'].includes(s.device.mode)?'deviceConnecting':s.restore_dispatched?'restored':'sandbox';
     $('device-label').textContent=t(s.device.speed_fuse_tripped?'fuseBlocked':badge);$('device-badge').classList.toggle('connected',connected);$('device-dot').className='dot'+(connected?' green':'');
     $('state-caption').textContent=t(!active&&s.state==='SAFE_STOPPED'?'goalEnded':s.target_walking&&phase==='WALKING_REST'?'targetWalking':s.finishing?'finishing':s.engine_issue&&active?'engineStopped':active&&cruising&&phase!=='running'?({slowing:'restSlowing',WALKING_REST:'restResting',resuming:'restResuming'}[phase]):'state_'+s.state);
     $('distance').textContent=(s.distance_m/1000).toFixed(2);$('target-distance').textContent=active||s.state==='SAFE_STOPPED'?(s.target_m/1000).toFixed(2):'—';

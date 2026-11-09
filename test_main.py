@@ -1,4 +1,5 @@
 """Desktop boundary tests: no real phone, firewall changes, or home-directory writes."""
+import asyncio
 import json
 import contextlib
 import io
@@ -196,10 +197,80 @@ class SafetyTests(APICase):
         self.assertEqual(self.api.save_preferences({"extra_distance":False})["error"]["code"], "track_locked")
 
     def test_device_mode_requires_connection_before_locking(self):
-        self.api._sandbox=False
-        response=self.api.lock_start({"points":TRACK,"profile":"standard","target_km":2,"checks":[True]*7})
-        self.assertEqual(response["error"]["code"],"device_required")
+        self.api._sandbox = False
+        bridge = self.api._bridge
+        payload = {"points": TRACK, "profile": "standard", "target_km": 2, "checks": [True]*7}
+        for stage, code, expected in (
+            ("usb", None, "device_usb_checking"),
+            ("usb", "device_unavailable", "device_usb_not_detected"),
+            ("lockdown", "device_connection_failed", "device_pairing_unready"),
+            ("lockdown", "device_trust_required", "device_trust_required"),
+            ("rsd", "tunnel_unavailable", "device_rsd_unready"),
+            ("ddi", "device_connection_failed", "device_ddi_unready"),
+            ("dvt", "device_connection_failed", "device_dvt_unready"),
+        ):
+            with self.subTest(stage=stage, code=code):
+                bridge.connection_stage = stage
+                bridge._device_error_code = code
+                self.assertEqual(self.api.lock_start(payload)["error"]["code"], expected)
+                self.assertFalse(self.api._session_active)
+                self.assertEqual(bridge.snapshot()["queued_sequence"], 0)
+
+    def test_cold_bridge_readiness_precedes_first_location_and_countdown(self):
+        self.api._sandbox = False
+        bridge = self.api._bridge
+        bridge.force_sandbox = False
+        started, allow_send = threading.Event(), threading.Event()
+
+        async def send(lat, lon):
+            started.set()
+            if not await asyncio.to_thread(allow_send.wait, 2):
+                raise TimeoutError("test did not release the first location")
+
+        async def clear():
+            pass
+
+        async def open_session():
+            bridge._simulator = SimpleNamespace(set=send, clear=clear)
+
+        def wait_until(predicate):
+            deadline = time.monotonic()+1
+            while not predicate() and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertTrue(predicate())
+
+        with patch.object(bridge, "_open_session", side_effect=open_session):
+            try:
+                bridge.connect()
+                wait_until(lambda: bridge.snapshot()["device_ready"])
+                self.assertEqual(bridge.snapshot()["delivered_sequence"], 0)
+                self.assertFalse(started.is_set())
+                self.assertEqual(self.lock()["start_phase"], "injecting")
+                self.assertTrue(started.wait(1))
+                self.assertEqual(self.api.get_state()["data"]["countdown_s"], 0)
+                allow_send.set()
+                wait_until(lambda: self.api.get_state()["data"]["start_phase"] == "countdown")
+            finally:
+                allow_send.set()
+                self.api._runner.close()
+                bridge.close()
+
+    def test_connection_lost_while_loading_route_does_not_queue_start(self):
+        self.api._sandbox = False
+        bridge = self.api._bridge
+        bridge.mode = engine.BridgeMode.CONNECTED
+        original = self.api._runner.load_track
+
+        def disconnect_after_load(*args, **kwargs):
+            original(*args, **kwargs)
+            bridge.mode = engine.BridgeMode.RECONNECTING
+            bridge.connection_stage = "dvt"
+
+        with patch.object(self.api._runner, "load_track", side_effect=disconnect_after_load):
+            response = self.api.lock_start({"points": TRACK, "profile": "standard", "target_km": 2, "checks": [True]*7})
+        self.assertEqual(response["error"]["code"], "device_dvt_unready")
         self.assertFalse(self.api._session_active)
+        self.assertEqual(bridge.snapshot()["queued_sequence"], 0)
 
     def test_all_seven_checks_are_required_at_backend(self):
         incomplete = [[True]*6, [1]*7]
@@ -305,13 +376,33 @@ class SafetyTests(APICase):
 
     def test_settlement_confirmation_and_restore(self):
         self.cruise()
+        previous = self.api._bridge
         self.assertEqual(self.api.safe_settle({"submitted": True})["error"]["code"], "settlement_required")
         result = self.api.safe_settle({"submitted": True, "success": True, "app_closed": True})
         self.assertTrue(result["ok"], result)
         self.assertFalse(result["data"]["session_active"])
         self.assertTrue(self.api._on_closing())
-        self.assertEqual(self.api._bridge.mode, engine.BridgeMode.CLOSED)
+        self.assertEqual(previous.mode, engine.BridgeMode.CLOSED)
+        self.assertIsNot(self.api._bridge, previous)
         self.lock()  # A fresh session after retirement is supported.
+
+    def test_settlement_prepares_next_device_before_second_lock(self):
+        self.lock()
+        self.api._sandbox = False
+        next_bridge = engine.IOSDeviceBridge(sandbox=True)
+        self.addCleanup(next_bridge.close)
+
+        def ready():
+            next_bridge.mode = engine.BridgeMode.CONNECTED
+
+        with patch.object(self.api, "_new_bridge", return_value=next_bridge), \
+             patch.object(next_bridge, "connect", side_effect=ready) as connect:
+            result = self.api.safe_settle({"discarded": True, "app_closed": True})
+            connect.assert_called_once()
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["data"]["device"]["device_ready"])
+        self.assertTrue(result["data"]["restore_dispatched"])
+        self.assertEqual(self.lock()["start_phase"], "injecting")
 
     def test_failed_restore_keeps_close_guard_and_can_retry(self):
         self.lock()

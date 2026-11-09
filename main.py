@@ -474,7 +474,7 @@ class DesktopAPI:
 
     def _start_status(self, device: dict) -> tuple[str, float]:
         if not self._sandbox:
-            if (device["mode"] != "CONNECTED" or device["speed_fuse_tripped"]
+            if (not device["device_ready"]
                     or device["reconnect_attempts"] != self._start_connection_attempt):
                 self._start_interrupted = True
             if self._start_interrupted:
@@ -501,7 +501,8 @@ class DesktopAPI:
             clock = dict(self._clock)
             if clock["status"] == "synced" and self._clock_checked_mono is not None and time.monotonic()-self._clock_checked_mono > 600:
                 clock["status"] = "stale"
-            device = state["device"]
+            device = self._bridge.snapshot() if self._runner_retired else state["device"]
+            state["device"] = device
             start_phase, countdown = ("idle", 0.0)
             if state["state"] == "LOCKED_START" and self._session_active and not self._settling:
                 start_phase, countdown = self._start_status(device)
@@ -603,6 +604,24 @@ class DesktopAPI:
         self._begin_clock_check()
         return self._state()["clock"]
 
+    def _device_for_lock(self) -> dict:
+        device = self._bridge.snapshot()
+        if self._sandbox or device["device_ready"]:
+            return device
+        if device["speed_fuse_tripped"]:
+            raise AppError("fuseBlocked")
+        code = device["error_code"]
+        if code in {"multiple_devices", "instance_running", "device_trust_required",
+                    "device_developer_mode_required", "tunnel_admin_required"}:
+            raise AppError(code)
+        stage = device["connection_stage"]
+        if stage == "usb":
+            checking = device["mode"] in ("CONNECTING", "RECONNECTING") or device["reconnect_attempts"] == 0
+            raise AppError("device_usb_checking" if checking and code is None else "device_usb_not_detected")
+        raise AppError({"lockdown": "device_pairing_unready", "rsd": "device_rsd_unready",
+                        "ddi": "device_ddi_unready", "dvt": "device_dvt_unready",
+                        "ready": "device_dvt_unready"}[stage])
+
     @rpc
     def lock_start(self, payload: dict) -> dict:
         if not isinstance(payload, dict):
@@ -623,25 +642,21 @@ class DesktopAPI:
             if (self._clock_checked_mono is None or clock_status not in ("synced", "offline")
                     or (clock_status == "synced" and time.monotonic()-self._clock_checked_mono > 600)):
                 raise AppError("clock_required")
-            if self._runner_retired:
-                self._bridge = self._new_bridge()
-                self._runner = engine.BiomechanicalRunner(self._bridge)
-                self._runner_retired = False
-                self._bridge.connect()
-            device = self._bridge.snapshot()
-            if not self._sandbox and device["mode"] != "CONNECTED":
-                raise AppError("device_required")
-            self._start_connection_attempt = device["reconnect_attempts"]
+            self._device_for_lock()
             # Persistence must succeed BEFORE taking control of device location.
             self._config.update({"track_points": points, "profile": profile, "target_km": target, "track_width_m": width, "extra_distance": extra})
+            if self._runner_retired:
+                self._runner = engine.BiomechanicalRunner(self._bridge)
+                self._runner_retired = False
             self._preparing = True
             runner = self._runner
         try:
             runner.load_track(wgs, profile=profile, target_km=target, track_width_m=width,
                               extra_distance=extra, _geometry=geometry)
-            with self._lock:
+            with self._lock, runner._lock, runner.bridge._lock:
                 if self._closed or self._runner is not runner:
                     raise AppError("app_closed")
+                self._start_connection_attempt = self._device_for_lock()["reconnect_attempts"]
                 self._session_active = True
                 runner.lock_start()
                 self._restore_failed = False
@@ -651,6 +666,8 @@ class DesktopAPI:
                 self._active_detour = []
         except engine.GeometryBudgetError:
             raise AppError("route_too_complex") from None
+        except AppError:
+            raise
         except (ValueError, RuntimeError):
             with self._lock:
                 self._session_active = runner.state.value in ACTIVE_STATES
@@ -759,7 +776,10 @@ class DesktopAPI:
                     self._restore_failed = True
                 raise AppError("restore_failed")
             self._bridge.close()
-            with self._lock:
+            with self._shutdown_lock, self._lock:
+                if not self._closed:
+                    self._bridge = self._new_bridge()
+                    self._bridge.connect()
                 self._session_active = False
                 self._restore_failed = False
                 self._restore_dispatched = not self._sandbox

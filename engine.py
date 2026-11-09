@@ -2075,6 +2075,7 @@ class IOSDeviceBridge:
         self._close_deadline = None
         self._close_ack = threading.Event()
         self.mode = BridgeMode.SANDBOX_MODE
+        self.connection_stage = "usb"
         self.reason = "explicit sandbox" if sandbox else "device not yet probed"
         self.last_error = None
         self._device_error_code = None
@@ -2193,6 +2194,9 @@ class IOSDeviceBridge:
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {"mode": self.mode.value, "reason": self.reason, "last_error": self.last_error,
+                    "device_ready": (self.mode == BridgeMode.CONNECTED and not (
+                        self._fuse_tripped or self._clear_requested or self._recovery_required or self._closing)),
+                    "connection_stage": self.connection_stage,
                     "error_code": self._device_error_code,
                     "udid": self.udid, "ios_version": self.ios_version, "battery_percent": self.battery_percent,
                     "battery_charging": self.battery_charging, "low_battery": self.low_battery,
@@ -2377,6 +2381,7 @@ class IOSDeviceBridge:
 
     async def _tunneld_provider(self, stack: AsyncExitStack) -> Any:
         with self._lock:
+            self.connection_stage = "rsd"
             self.reason = "Waiting for local TCP tunneld"
         deadline = time.monotonic()+self.connect_timeout
         started = False
@@ -2446,15 +2451,16 @@ class IOSDeviceBridge:
             raise DeviceConnectionError("device_unavailable", "RSD identified a different iPhone; refusing control")
 
     @contextlib.contextmanager
-    def _connection_stage(self, stage: str, timeout: float):
+    def _connection_stage(self, stage: str, label: str, timeout: float):
         with self._lock:
-            self.reason = stage
+            self.connection_stage = stage
+            self.reason = label
         try:
             yield
         except asyncio.TimeoutError as exc:
-            raise DeviceConnectionError("device_connection_failed", f"{stage} timed out after {timeout:g}s") from exc
+            raise DeviceConnectionError("device_connection_failed", f"{label} timed out after {timeout:g}s") from exc
         except Exception as exc:
-            raise DeviceConnectionError(_device_error_code(exc), f"{stage}: {type(exc).__name__}: {exc}") from exc
+            raise DeviceConnectionError(_device_error_code(exc), f"{label}: {type(exc).__name__}: {exc}") from exc
 
     async def _open_rsd(self, stack: AsyncExitStack, selected: str) -> Any:
         # An already running owned daemon may still hold the device tunnel.
@@ -2467,7 +2473,7 @@ class IOSDeviceBridge:
 
         preferred_stack = AsyncExitStack()
         try:
-            with self._connection_stage("Preferred RSD tunnel", self.connect_timeout):
+            with self._connection_stage("rsd", "Preferred RSD tunnel", self.connect_timeout):
                 preferred = importlib.import_module("pymobiledevice3.remote.rsd_tunnel").PreferredRsdTunnel
                 provider = await asyncio.wait_for(
                     self._enter_resource(preferred_stack, preferred(serial=selected, autopair=False)), timeout=self.connect_timeout)
@@ -2493,10 +2499,10 @@ class IOSDeviceBridge:
     async def _open_session(self) -> None:
         stack = AsyncExitStack()
         try:
-            with self._connection_stage("usbmux device discovery", self.connect_timeout):
+            with self._connection_stage("usb", "usbmux device discovery", self.connect_timeout):
                 requested = await self._select_device()
-            self._claim_device(requested)
-            with self._connection_stage("USB Lockdown handshake", self.connect_timeout):
+            with self._connection_stage("lockdown", "USB Lockdown handshake", self.connect_timeout):
+                self._claim_device(requested)
                 async with AsyncExitStack() as probe:
                     lockdown_module = importlib.import_module("pymobiledevice3.lockdown")
                     lockdown = await asyncio.wait_for(
@@ -2517,7 +2523,7 @@ class IOSDeviceBridge:
             with self._lock:
                 self.udid, self.ios_version = selected, version
             provider = await self._open_rsd(stack, selected)
-            with self._connection_stage(f"iOS {version} DDI auto-mount over RSD", self.mount_timeout):
+            with self._connection_stage("ddi", f"iOS {version} DDI auto-mount over RSD", self.mount_timeout):
                 mounter = importlib.import_module("pymobiledevice3.services.mobile_image_mounter")
                 # Let the driver check the phone again on every new session.
                 # A cached UDID cannot tell us whether the phone rebooted.
@@ -2533,13 +2539,13 @@ class IOSDeviceBridge:
                         already_mounted = getattr(exceptions, "AlreadyMountedError", ())
                     if not isinstance(exc, already_mounted):
                         raise
-            with self._connection_stage("DVT handshake", self.connect_timeout):
+            with self._connection_stage("dvt", "DVT handshake", self.connect_timeout):
                 try:
                     dvt_class = importlib.import_module("pymobiledevice3.services.dvt.instruments.dvt_provider").DvtProvider
                 except (ImportError, AttributeError):
                     dvt_class = importlib.import_module("pymobiledevice3.services.dvt.dvt_secure_socket_proxy").DvtSecureSocketProxyService
                 dvt = await asyncio.wait_for(self._enter_resource(stack, dvt_class(provider)), timeout=self.connect_timeout)
-            with self._connection_stage("DVT LocationSimulation channel", self.connect_timeout):
+            with self._connection_stage("dvt", "DVT LocationSimulation channel", self.connect_timeout):
                 sim_class = importlib.import_module("pymobiledevice3.services.dvt.instruments.location_simulation").LocationSimulation
                 simulator = await asyncio.wait_for(self._enter_resource(stack, sim_class(dvt)), timeout=self.connect_timeout)
             wait_disconnected = getattr(getattr(dvt, "dtx", None), "wait_disconnected", None)
@@ -2840,6 +2846,8 @@ class IOSDeviceBridge:
                     with self._lock:
                         self.mode = BridgeMode.RECONNECTING if self._ever_connected else BridgeMode.CONNECTING
                         self.reconnect_attempts += 1
+                        self.connection_stage = "usb"
+                        self.last_error = self._device_error_code = None
                     try:
                         self._open_task = asyncio.create_task(self._open_session())
                         try:
@@ -2852,8 +2860,9 @@ class IOSDeviceBridge:
                             self._open_task = None
                         if self._clear_requested:
                             continue
-                        # Deliver the FIFO head before announcing connection;
-                        # later points still need their physical predecessors.
+                        # Cold start has no sample. Handshake readiness alone
+                        # lets the desktop queue its first location. On reconnect
+                        # replay any existing sample before resuming motion.
                         self._check_dvt_connection()
                         sample = self._take_sample(reconnect=True)
                         if sample is not None:
@@ -2861,6 +2870,7 @@ class IOSDeviceBridge:
                         self._check_dvt_connection()
                         with self._lock:
                             self.mode = BridgeMode.CONNECTED
+                            self.connection_stage = "ready"
                             self.reason = "RSD + DVT location simulation ready"
                             self.last_error = None
                             self._device_error_code = None
@@ -2896,6 +2906,7 @@ class IOSDeviceBridge:
                 except Exception as exc:
                     with self._lock:
                         self.mode = BridgeMode.RECONNECTING
+                        self.connection_stage = "dvt"
                         self._device_error_code = _device_error_code(exc)
                         self.reason = self.last_error = _diagnostic_text(f"{type(exc).__name__}: {exc}")
                         failure = "Location transmission failed" if sample is not None else "DVT connection lost"

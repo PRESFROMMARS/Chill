@@ -199,6 +199,16 @@ assert.equal(element('dialog-error').textContent,dictionary.zh.clock_required);
 assert(!element('dialog-error').classes.has('hidden'));
 errors.renderDialogError();
 assert.equal(element('dialog-error').textContent,dictionary.zh.clock_required,'Modal rerenders must retain failures');
+for(const [code,detail] of [
+  ['device_usb_not_detected',/USB 未检测到 iPhone.*iTunes.*信任此电脑/],
+  ['device_pairing_unready',/USB 已识别到 iPhone.*信任此电脑/],
+  ['device_rsd_unready',/RSD.*管理员.*开发者模式/],
+  ['device_ddi_unready',/DDI.*开发者模式/],
+  ['device_dvt_unready',/DVT.*管理员.*开发者模式/],
+]){
+  errors.showError(new Error(code));
+  assert.match(element('dialog-error').textContent,detail);
+}
 dialogModel.modal=null;errors.showError(new Error('connectionLost'));
 assert.equal(outsideErrors,1);
 console.log('Finish, engine failure, settlement availability and persistent inline dialog errors passed.');
