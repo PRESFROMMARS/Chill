@@ -66,6 +66,8 @@ EPS_M = 1e-7
 # delivery never earns extra distance, and the 0.95 s rate slot must not shrink
 # a legally generated one-second step to 0.95 seconds after a backlog drains.
 MOTION_INTERVAL_S = 0.95
+STATIONARY_JITTER_MIN_M = 0.3
+STATIONARY_JITTER_MAX_M = 0.8
 MAX_MOTION_STEP_S = 1.0
 MAX_MOTION_SPEED_MPS = 3.8
 MAX_SAMPLE_DISTANCE_M = MAX_MOTION_SPEED_MPS * MAX_MOTION_STEP_S
@@ -1115,6 +1117,7 @@ class BiomechanicalRunner(threading.Thread):
             self._set_state(RunnerState.LOCKED_START)
             self._record_trace()
             self.start_sequence = self.bridge.set_location(self.position["lat"], self.position["lon"])
+            self.bridge.set_stationary(True)
             if background and not self.is_alive():
                 super().start()
             return self.snapshot()
@@ -1124,6 +1127,7 @@ class BiomechanicalRunner(threading.Thread):
             self._require_open()
             if self.state != RunnerState.LOCKED_START:
                 raise RuntimeError("lock_start() is required before cruising")
+            self.bridge.set_stationary(False)
             self._active_since = time.monotonic()
             self._control_deadline = self._control_clock()+1.5
             self._set_state(RunnerState.CRUISING_LOOP)
@@ -1386,6 +1390,8 @@ class BiomechanicalRunner(threading.Thread):
         self._pending_detour = None
         self._exit_remaining = None
         self._set_state(RunnerState.SAFE_STOPPED)
+        if not self._closed:
+            self.bridge.set_stationary(True)
         self._event("settled", reason=self._stop_reason or "target", distance_m=self.distance_m,
                     elapsed_s=self.elapsed_s, targets_visited=list(self.targets_visited))
         # Hold the final simulated location until explicit release/close. Clearing
@@ -1606,11 +1612,7 @@ class BiomechanicalRunner(threading.Thread):
             dt = min(dt, MAX_MOTION_STEP_S)
         self._prepare_next_lap(dt)
         with self._lock:
-            if self.state in (RunnerState.IDLE, RunnerState.SAFE_STOPPED):
-                return
-            if self.state == RunnerState.LOCKED_START:
-                if not self.bridge.snapshot()["speed_fuse_tripped"] and self.bridge.motion_delay() <= 1e-6:
-                    self.bridge.set_location(self.position["lat"], self.position["lon"])
+            if self.state in (RunnerState.IDLE, RunnerState.LOCKED_START, RunnerState.SAFE_STOPPED):
                 return
             on_loop = self.state == RunnerState.CRUISING_LOOP and self._pending_detour is None
             if self._stop_pending and on_loop and self._stop_reason != "target":
@@ -1654,6 +1656,13 @@ class BiomechanicalRunner(threading.Thread):
             # the separate locked-start and terminal states may have speed 0.
             previous = self.speed_mps if self.elapsed_s > 0 else requested_speed
             speed = max(previous-0.55*dt, min(previous+0.55*dt, requested_speed))
+            if not self.bridge.force_sandbox and self.elapsed_s == 0:
+                # Leave room for the last stationary offset in the first wire step.
+                delivered = self.bridge.snapshot()["last_delivered_position"]
+                if delivered is not None:
+                    offset = haversine_distance(*_point(self.position), *_point(delivered))
+                    if offset <= STATIONARY_JITTER_MAX_M+DISTANCE_TOLERANCE_M:
+                        speed = min(speed, (MAX_SAMPLE_DISTANCE_M-offset)/dt)
             active_dt = dt
             if phase != "running":
                 self._lateral.event = None
@@ -1798,6 +1807,7 @@ class BiomechanicalRunner(threading.Thread):
                 self._hold_elapsed_s = max(0.0, time.monotonic()-self._stopped_at)
             self._closed = True
             self._shutdown.set()
+            self.bridge.set_stationary(False)
             if self.state not in (RunnerState.IDLE, RunnerState.SAFE_STOPPED):
                 self._stop_reason = "shutdown"
                 self._finish_stop()
@@ -2059,6 +2069,7 @@ class IOSDeviceBridge:
         self._simulator = None
         self._provider = None
         self._latest = None
+        self._stationary = False
         self._sequence = 0
         self._sent_sequence = 0
         self._critical = deque(maxlen=128)
@@ -2111,6 +2122,10 @@ class IOSDeviceBridge:
                 self._thread = threading.Thread(target=self._worker, name="PiggyIOSBridge", daemon=True)
                 self._thread.start()
             return self.snapshot()
+
+    def set_stationary(self, enabled: bool) -> None:
+        with self._lock:
+            self._stationary = enabled
 
     def set_location(self, lat: float, lon: float, *, critical: bool = False) -> int:
         lat, lon = _latlon(lat, lon)
@@ -2750,6 +2765,18 @@ class IOSDeviceBridge:
             self._critical.append(self._deferred_critical)
             self._deferred_critical = None
 
+    def _stationary_heartbeat(self, sample: tuple[int, float, float]) -> bool:
+        return self._stationary and sample == self._latest and sample[0] == self._sent_sequence
+
+    def _next_send_time(self, sample: tuple[int, float, float]) -> Optional[float]:
+        completed_at = self._last_send_completed_at if self._last_send_completed_at is not None else self._last_send_at
+        if completed_at is None:
+            return None
+        if self._stationary_heartbeat(sample) and self._last_send_at is not None:
+            # Maintain start-to-start cadence during a hold without overlapping calls.
+            return max(self._last_send_at+MOTION_INTERVAL_S, completed_at)
+        return completed_at+MOTION_INTERVAL_S
+
     def _take_sample(self, reconnect: bool = False) -> Optional[tuple[int, float, float]]:
         with self._lock:
             self._prune_delivered()
@@ -2758,8 +2785,12 @@ class IOSDeviceBridge:
                 # not lose an in-flight checkpoint. FIFO keeps its approach
                 # intact; jumping a checkpoint ahead could trip the speed fuse.
                 return self._critical[0]
-            heartbeat_due = self._last_send_completed_at is not None and self._wire_clock()-self._last_send_completed_at >= MOTION_INTERVAL_S
-            return self._latest if self._latest is not None and (reconnect or self._latest[0] > self._sent_sequence or heartbeat_due) else None
+            if self._latest is None or reconnect or self._latest[0] > self._sent_sequence:
+                return self._latest
+            deadline = self._next_send_time(self._latest)
+            if self._last_send_completed_at is not None and deadline is not None and self._wire_clock() >= deadline:
+                return self._latest
+            return None
 
     @contextlib.asynccontextmanager
     async def _sending_sample(self):
@@ -2773,16 +2804,17 @@ class IOSDeviceBridge:
 
     async def _send(self, sample: tuple[int, float, float]) -> None:
         # This is the sole location injection gateway, including reconnection,
-        # critical waypoints and unchanged-position heartbeats.
+        # critical waypoints and stationary heartbeats.
         if self._send_lock is None:
             self._send_lock = asyncio.Lock()
         async with self._send_lock, self._sending_sample():
             if self._fuse_tripped:
                 raise SpeedFuseError("speed fuse is latched; explicit restoration required")
             await self._wait_sync_calls()
-            completed_at = self._last_send_completed_at if self._last_send_completed_at is not None else self._last_send_at
-            if completed_at is not None:
-                wait = MOTION_INTERVAL_S-(self._wire_clock()-completed_at)
+            with self._lock:
+                deadline = self._next_send_time(sample)
+            if deadline is not None:
+                wait = deadline-self._wire_clock()
                 if wait > 1e-6:
                     await asyncio.sleep(wait)
             if self._closed or self._closing or self._clear_requested:
@@ -2793,6 +2825,17 @@ class IOSDeviceBridge:
             # for its rate-limit slot. Revalidate before touching the device.
             if self._fuse_tripped:
                 raise SpeedFuseError("speed fuse latched while waiting to transmit")
+            position = sample[1:]
+            with self._lock:
+                if self._stationary_heartbeat(sample):
+                    previous = self._last_send_position
+                    bearing = random.uniform(0, 360)
+                    if previous is not None and previous != position:
+                        # Choose the opposite half of the circle so two fixes
+                        # at the same radius still have distinct coordinates.
+                        bearing = calculate_bearing(*position, *previous)+random.uniform(90, 270)
+                    position = _destination(position, bearing, random.uniform(
+                        STATIONARY_JITTER_MIN_M, STATIONARY_JITTER_MAX_M))
             sent_at = self._wire_clock()
             if self._last_send_at is not None and self._last_send_position is not None:
                 gap = max(1e-6, sent_at-self._last_send_at)
@@ -2801,7 +2844,7 @@ class IOSDeviceBridge:
                     self._send_late_count += 1
                 # A long outage must not grant permission to jump to a distant
                 # simulated position. Preserve this baseline across reconnects.
-                distance = haversine_distance(*self._last_send_position, sample[1], sample[2])
+                distance = haversine_distance(*self._last_send_position, *position)
                 if distance > MAX_SAMPLE_DISTANCE_M+DISTANCE_TOLERANCE_M:
                     with self._lock:
                         self._fuse_tripped = True
@@ -2820,7 +2863,7 @@ class IOSDeviceBridge:
                     self._location_dirty = True
                     self._last_clear_succeeded = False
             try:
-                await asyncio.wait_for(_invoke(self._simulator.set, sample[1], sample[2],
+                await asyncio.wait_for(_invoke(self._simulator.set, *position,
                                                _sync_calls=self._pending_sync_calls,
                                                _executor=self._driver_executor), timeout=self.send_timeout)
             except asyncio.TimeoutError as exc:
@@ -2828,11 +2871,11 @@ class IOSDeviceBridge:
             with self._lock:
                 self._last_send_at = sent_at
                 self._last_send_completed_at = self._wire_clock()
-                self._last_send_position = (sample[1], sample[2])
+                self._last_send_position = position
                 self._sent_sequence = sample[0]
                 self._prune_delivered()
                 self.physical_sent += 1
-                self.last_delivered_position = {"lat": sample[1], "lon": sample[2]}
+                self.last_delivered_position = {"lat": position[0], "lon": position[1]}
 
     def _check_dvt_connection(self) -> None:
         task = self._dvt_disconnect_task
@@ -2999,6 +3042,7 @@ class IOSDeviceBridge:
             if self._closed:
                 return False
             self._latest = None
+            self._stationary = False
             self._critical.clear()
             self._critical_sequences.clear()
             self._deferred_critical = None

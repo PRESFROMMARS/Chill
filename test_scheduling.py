@@ -206,6 +206,49 @@ class SchedulingTests(unittest.TestCase):
         self.assertIsNone(bridge._last_send_completed_at)
         self.assertIsNone(bridge._last_send_at)
 
+    def test_locked_start_keeps_sending_distinct_positions_without_advancing_route(self):
+        clock = [0.0]
+        bridge = self.bridge(clock=lambda: clock[0])
+        runner = e.BiomechanicalRunner(bridge, rng=random.Random(41))
+        self.addCleanup(runner.close)
+        runner.load_track([e._destination(ORIGIN, -i*360/16, 60) for i in range(16)])
+        locked = runner.lock_start(background=False)
+        anchor = e._point(locked["position"])
+        starts, _ = self.simulator(bridge, clock, latency=.35)
+        positions = []
+
+        async def send_updates():
+            await bridge._send(bridge._take_sample())
+            positions.append(e._point(bridge.last_delivered_position))
+            for _ in range(12):
+                clock[0] = starts[-1]+.94
+                self.assertIsNone(bridge._take_sample())
+                clock[0] = starts[-1]+.96
+                runner.step()
+                await bridge._send(bridge._take_sample())
+                positions.append(e._point(bridge.last_delivered_position))
+
+        asyncio.run(send_updates())
+        self.assertEqual(positions[0], anchor)
+        for previous, current in zip(positions, positions[1:]):
+            self.assertNotEqual(previous, current)
+            self.assertGreaterEqual(e.haversine_distance(*anchor, *current), .3-1e-6)
+            self.assertLessEqual(e.haversine_distance(*anchor, *current), .8+1e-6)
+        self.assertTrue(all(.8 <= b-a <= 1 for a, b in zip(starts, starts[1:])))
+        held = runner.snapshot()
+        for field in ("position", "distance_m", "elapsed_s", "trace_sequence"):
+            self.assertEqual(held[field], locked[field])
+        self.assertEqual(bridge.snapshot()["queued_sequence"], runner.start_sequence)
+        self.assertEqual(bridge.snapshot()["delivered_sequence"], runner.start_sequence)
+        offset = e.haversine_distance(*anchor, *positions[-1])
+        runner.start_cruising(background=False)
+        with patch.object(runner, "_speed", return_value=e.MAX_MOTION_SPEED_MPS):
+            moving = runner.step(1.0)
+        self.assertLessEqual(moving["distance_m"], e.MAX_SAMPLE_DISTANCE_M-offset+1e-6)
+        clock[0] = bridge._last_send_completed_at+.96
+        asyncio.run(bridge._send(bridge._take_sample()))
+        self.assertEqual(e._point(bridge.last_delivered_position), e._point(moving["position"]))
+
     def test_live_runner_45_minutes_with_100_to_150ms_sends_has_no_backlog(self):
         # Virtual wall time drives the real run(), FIFO and _send(). Driver
         # latency also attempts a producer tick while the send is in flight.

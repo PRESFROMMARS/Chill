@@ -623,6 +623,7 @@ class DesktopAPI:
     @staticmethod
     def _geometry(points: list[dict]) -> tuple[list[tuple], engine.TrackGeometry]:
         try:
+            # Map anchors are GCJ-02. The engine and all wire fixes use WGS-84.
             wgs = []
             for p in points:
                 lon, lat = engine.gcj02_to_wgs84(p["lon"], p["lat"])

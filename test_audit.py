@@ -216,11 +216,20 @@ class AuditTests(unittest.TestCase):
         REPORT['goal_walk']={'ticks_after_target':len(post),'min_speed_mps':min(post),'distance_at_manual_end_m':r.distance_m,'auto_resume':False,'wire_calls_including_initial_lock':len(rec.calls)}
         r.hold_position()
         held = r.snapshot()
-        last_coordinates = rec.calls[-1][1:]
-        clock.t += 1.0
-        r.step(.95)
-        asyncio.run(b._send(b._take_sample()))
-        self.assertEqual(rec.calls[-1][1:], last_coordinates)
+        anchor = e._point(held["position"])
+        hold_started = len(rec.calls)
+        async def hold():
+            for _ in range(8):
+                clock.t += 1.0
+                r.step(.95)
+                await b._send(b._take_sample())
+        asyncio.run(hold())
+        for prior, current in zip(rec.calls[hold_started-1:], rec.calls[hold_started:]):
+            self.assertNotEqual(prior[1:], current[1:])
+            self.assertAlmostEqual(current[0]-prior[0], 1.0)
+            self.assertGreaterEqual(e.haversine_distance(*anchor, *current[1:]), .3-1e-6)
+            self.assertLessEqual(e.haversine_distance(*anchor, *current[1:]), .8+1e-6)
+        self.assertEqual(r.snapshot()["position"], held["position"])
         self.assertEqual(r.snapshot()["distance_m"], held["distance_m"])
         self.assertEqual(r.snapshot()["elapsed_s"], held["elapsed_s"])
         self.assertEqual(r.state, e.RunnerState.SAFE_STOPPED)
