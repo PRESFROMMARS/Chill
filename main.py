@@ -255,6 +255,8 @@ class WindowsProtection:
         if current is None:
             LOGGER.warning("Apple Mobile Device Service query failed (exit %s)", service.returncode)
             return "stopped"
+        if self._stop.is_set():
+            return "not_required"
         self._set(driver="starting")
         if current != 2:  # SERVICE_START_PENDING
             try:
@@ -263,6 +265,8 @@ class WindowsProtection:
                     LOGGER.warning("Could not set Apple Mobile Device Service to automatic (exit %s)", configured.returncode)
             except subprocess.TimeoutExpired:
                 LOGGER.warning("Setting Apple Mobile Device Service to automatic timed out")
+            if self._stop.is_set():
+                return "not_required"
             try:
                 started = self._quiet(["sc.exe", "start", name], timeout=3)
             except subprocess.TimeoutExpired:
@@ -282,6 +286,8 @@ class WindowsProtection:
             except subprocess.TimeoutExpired:
                 pass
             self._stop.wait(min(.25, max(0.0, deadline-time.monotonic())))
+        if self._stop.is_set():
+            return "not_required"
         LOGGER.warning("Apple Mobile Device Service did not reach RUNNING within 8 seconds")
         return "stopped"
 

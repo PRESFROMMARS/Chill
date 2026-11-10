@@ -116,12 +116,14 @@ class DeveloperImageDownloadTests(unittest.TestCase):
         digest = (len(data), hashlib.sha256(data).hexdigest())
         with patch.object(ddi_support.urllib.request, "build_opener") as builder:
             opener = builder.return_value
-            opener.open.side_effect = [TimeoutError("raw unavailable"), io.BytesIO(b"mirror error"), io.BytesIO(data)]
+            opener.open.side_effect = [TimeoutError("raw unavailable"), io.BytesIO(b"mirror error"),
+                                       OSError("second mirror unavailable"), io.BytesIO(data)]
             self.assertEqual(ddi_support._download("Cryptex", "Image.dmg", digest), data)
             requests = opener.open.call_args_list
-        self.assertEqual([request.kwargs["timeout"] for request in requests], [3, 3, 3])
+        self.assertEqual([request.kwargs["timeout"] for request in requests], [3, 3, 3, 3])
         self.assertEqual([request.args[0].split("/")[2] for request in requests],
-                         ["raw.githubusercontent.com", "fastly.jsdelivr.net", "testingcf.jsdelivr.net"])
+                         ["raw.githubusercontent.com", "fastly.jsdelivr.net", "testingcf.jsdelivr.net",
+                          "cdn.jsdelivr.net"])
         self.assertTrue(all(ddi_support.DDI_REVISION in request.args[0] for request in requests))
 
 

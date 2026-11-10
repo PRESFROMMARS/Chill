@@ -731,6 +731,31 @@ class MultiLapTests(EngineCase):
 
 
 class BridgeTests(EngineCase):
+    def test_usb_discovery_waits_for_service_preparation(self):
+        preparing, prepared = threading.Event(), threading.Event()
+
+        def prepare():
+            preparing.set()
+            if not prepared.wait(2):
+                raise TimeoutError("test did not release the service check")
+
+        bridge = e.IOSDeviceBridge(sandbox=True, before_discovery=prepare)
+        self.addCleanup(bridge.close)
+        usbmux = MagicMock()
+        usbmux.list_devices.return_value = [SimpleNamespace(serial="test-phone")]
+
+        async def exercise():
+            discovery = asyncio.create_task(bridge._select_device())
+            try:
+                self.assertTrue(await asyncio.to_thread(preparing.wait, 1))
+                usbmux.list_devices.assert_not_called()
+            finally:
+                prepared.set()
+            self.assertEqual(await discovery, "test-phone")
+
+        with patch.object(e.importlib, "import_module", return_value=usbmux):
+            asyncio.run(exercise())
+
     def test_frozen_mount_uses_validated_cache_or_bundled_image_without_downloading(self):
         bridge = e.IOSDeviceBridge(sandbox=True)
         self.addCleanup(bridge.close)

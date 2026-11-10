@@ -59,7 +59,7 @@ def _download(variant: str, name: str, expected: tuple[int, str]) -> bytes:
         raw,
         f"https://fastly.jsdelivr.net/gh/{repo}@{DDI_REVISION}/{path}",
         f"https://testingcf.jsdelivr.net/gh/{repo}@{DDI_REVISION}/{path}",
-        f"https://mirror.ghproxy.com/{raw}",
+        f"https://cdn.jsdelivr.net/gh/{repo}@{DDI_REVISION}/{path}",
     )
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     errors = []
