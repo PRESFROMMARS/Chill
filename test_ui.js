@@ -35,6 +35,54 @@ assert.match(html, /preferCanvas:true/);
 assert.deepEqual([...html.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)].map(match=>match[1]), ['/vendor/leaflet.js']);
 assert.deepEqual([...html.matchAll(/<link rel="stylesheet" href="([^"]+)"/g)].map(match=>match[1]), ['/vendor/leaflet.css']);
 assert.match(html, /meta name="referrer" content="no-referrer"/);
+
+// Verify tile coordinates and layer order in both renderers, including the canvas fit zoom.
+const mapSource = html.slice(html.indexOf('  const MAP_NATIVE_MAX_ZOOM'),
+  html.indexOf('  function bearing('));
+const leafletTiles = [];
+const canvasTiles = [];
+const mapModel = {layer: 'hybrid'};
+const MapView = new Function('L', 'model', '$', 'Image', 'getComputedStyle', 'document',
+  mapSource + '; return MapView;')(
+  {tileLayer: (url, options) => ({url, options, on() {}})}, mapModel,
+  () => ({setAttribute() {}}), class { set src(url) { canvasTiles.push(new URL(url)); } },
+  () => ({fontFamily: 'sans-serif'}), {body: {}});
+const map = Object.assign(Object.create(MapView.prototype), {
+  leaflet: true, lang: 'en', tiles: new Map(),
+  baseGroup: {clearLayers() { leafletTiles.length = 0; }, addLayer(layer) { leafletTiles.push(layer); }},
+});
+map.setLayer('hybrid');
+assert.deepEqual(leafletTiles.map(tile => new URL(tile.url.replace('{s}', '2')).searchParams.get('style')), ['6', '8']);
+for (const tile of leafletTiles) {
+  assert.match(tile.url, /&x=\{x\}&y=\{y\}&z=\{z\}$/);
+  assert.equal(tile.options.maxNativeZoom, 18);
+}
+map.setLayer('street');
+assert.match(leafletTiles[0].url, /webst0\{s\}.*style=7&lang=en/);
+map.lang = 'zh';
+map.setLayer('street');
+assert.match(leafletTiles[0].url, /webrd0\{s\}.*style=8&lang=zh_cn/);
+
+const canvasMap = Object.assign(Object.create(MapView.prototype), {
+  leaflet: false, lang: 'en', width: 1000, height: 700, tiles: new Map(),
+  shapes: {track: [], anchors: [], active: [], draft: []},
+  ctx: {clearRect() {}, fillRect() {}, strokeRect() {}, fillText() {}},
+});
+canvasMap.fit([[35.97647, 120.20660], [35.97649, 120.20662]]);
+assert.equal(canvasMap.zoom, 18);
+assert(canvasTiles.length > 0);
+assert(canvasTiles.every(url => url.searchParams.get('z') === '18' &&
+  url.searchParams.get('style') === '7' && url.searchParams.get('lang') === 'en'));
+canvasTiles.length = 0;
+canvasMap.setLayer('hybrid');
+assert(canvasTiles.length > 0 && canvasTiles.length % 2 === 0);
+for (let i = 0; i < canvasTiles.length; i += 2) {
+  const [satellite, roads] = canvasTiles.slice(i, i+2);
+  assert.equal(satellite.searchParams.get('style'), '6');
+  assert.equal(roads.searchParams.get('style'), '8');
+  for (const axis of ['x', 'y', 'z']) assert.equal(satellite.searchParams.get(axis), roads.searchParams.get(axis));
+}
+
 // The first-run decision must come from the saved template, not browser storage.
 const firstRunStart = html.indexOf('  function shouldAutoStartTutorial(');
 const firstRunEnd = html.indexOf('  function considerTutorial()', firstRunStart);

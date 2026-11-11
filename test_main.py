@@ -352,12 +352,17 @@ class SafetyTests(APICase):
         self.assertTrue(self.api._on_closing())
 
     def test_wgs_injection_and_gcj_display_are_consistent(self):
-        state = self.lock()
+        bridge = self.api._bridge
+        with patch.object(bridge, "set_location", wraps=bridge.set_location) as set_location:
+            state = self.lock()
         wgs, gcj = state["position"], state["gcj_position"]
+        self.assertEqual(set_location.call_args_list[0].args, (wgs["lat"], wgs["lon"]))
         lon, lat = engine.wgs84_to_gcj02(wgs["lon"], wgs["lat"])
         self.assertAlmostEqual(gcj["lat"], lat, places=10)
         self.assertAlmostEqual(gcj["lon"], lon, places=10)
         self.assertNotAlmostEqual(wgs["lon"], gcj["lon"], places=4)
+        first = TRACK[0]
+        self.assertLess(engine.haversine_distance(first["lat"], first["lon"], lat, lon), 7.1)
 
     def test_active_track_and_profile_are_immutable_but_language_is_not(self):
         self.lock()
