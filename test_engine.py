@@ -147,7 +147,7 @@ class RestTests(EngineCase):
                 self.assertTrue(r._corridor.within(e._point(r.position), 0.5))
                 if state["pause_phase"] == "WALKING_REST":
                     break
-            for _ in range(10):
+            for _ in range(math.ceil(9.5/e.MOTION_INTERVAL_S)):
                 r.step()
             r.resume()
             for _ in range(30):
@@ -163,7 +163,7 @@ class RestTests(EngineCase):
         self.assertGreater(r._rest_total_s, 18)
 
     def test_scheduler_never_catches_up_a_walking_gap(self):
-        for phase, expected in (("running", .95), ("WALKING_REST", .95)):
+        for phase in ("running", "WALKING_REST"):
             r = self.runner()
             r._pause_phase = phase
             r._active_since = None
@@ -171,7 +171,7 @@ class RestTests(EngineCase):
                  patch.object(e.time, "monotonic", side_effect=[0,0,5,5,5,5,5,5]), \
                  patch.object(r, "_tick") as tick:
                 r.run()
-            tick.assert_called_once_with(expected)
+            tick.assert_called_once_with(e.MOTION_INTERVAL_S)
 
     def test_extra_distance_is_opt_in_bounded_and_validated_before_mutation(self):
         for target in (0.1, 2, 100):
@@ -310,8 +310,7 @@ class RunnerTests(EngineCase):
         self.assertLessEqual(runner.base_speed_mps, 3.3)
         self.assertEqual(runner.target_m, 2000)
         self.assertEqual(runner.target_m, runner.requested_target_m)
-        radius = e.haversine_distance(*runner._center.points[0], *runner.start_point)
-        self.assertTrue(4 <= radius <= 7)
+        self.assertEqual(runner.start_point, circle()[0])
         runner.step()
         self.assertGreater(runner.speed_mps, 0)
         self.assertAlmostEqual(runner.stride_m, runner.speed_mps/(192/60))
@@ -445,7 +444,7 @@ class RunnerTests(EngineCase):
         runner.start_cruising()
         time.sleep(2.05)
         self.assertTrue(runner.daemon)
-        self.assertAlmostEqual(runner.elapsed_s, 1.9, delta=0.2)
+        self.assertAlmostEqual(runner.elapsed_s, 2*e.MOTION_INTERVAL_S, delta=0.2)
         self.assertGreater(runner.distance_m, 0)
         runner.request_safe_stop()
         runner.close()
@@ -480,7 +479,6 @@ class RunnerTests(EngineCase):
 
     def test_target_already_on_loop_gets_one_critical_tick_before_motion_resumes(self):
         runner = self.runner()
-        runner._connector = None
         runner._loop_s = runner._lap.cumulative[5]
         runner.position = runner._lap.sample(runner._loop_s)
         target = runner._lap.points[5]
@@ -522,7 +520,7 @@ class MultiLapTests(EngineCase):
                     # Check rendered chords too, rather than only their endpoints.
                     for t in (0.25, 0.5, 0.75):
                         self.assertTrue(runner._corridor.within(e._interpolate(previous, point, t), width/2))
-                    self.assertLessEqual(e.haversine_distance(*previous, *point), runner.speed_mps*0.95+1e-4)
+                    self.assertLessEqual(e.haversine_distance(*previous, *point), runner.speed_mps*e.MOTION_INTERVAL_S+1e-4)
                     previous = point
 
     def test_stadium_dimensions_rotation_and_deformation_are_bounded(self):
@@ -568,8 +566,6 @@ class MultiLapTests(EngineCase):
 
     def test_live_merge_rejection_keeps_loop_motion_running(self):
         runner = self.runner()
-        while runner._connector is not None:
-            runner.step()
         target = e._destination(ORIGIN, 110, 100)
         runner.submit_detour([{'lat': target[0], 'lon': target[1], 'is_target': True}])
         runner._exit_remaining = 0

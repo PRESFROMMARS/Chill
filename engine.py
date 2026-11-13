@@ -17,7 +17,7 @@ Integration: bridge = IOSDeviceBridge(); runner = BiomechanicalRunner(bridge)
 runner.load_track(points); runner.lock_start(); runner.start_cruising()
 Poll runner.snapshot() / runner.events from the UI; close both objects on exit
 (a bridge supplied by the caller remains owned by that caller).
-The nominal tick period is 0.95 s (1.0526 Hz), not exactly 1.0 Hz. Real-device
+The nominal tick period is 0.8 s (1.25 Hz). Real-device
 motion waits for outstanding sends; latency delays production instead of
 building a backlog. Desktop OS scheduling cannot promise hard real-time
 deadlines. Suspend gaps are discarded.
@@ -62,10 +62,9 @@ EARTH_RADIUS_M = 6371008.8
 GCJ_A = 6378245.0
 GCJ_EE = 0.00669342162296594323
 EPS_M = 1e-7
-# One physical sample may represent at most one second of motion. A delayed
-# delivery never earns extra distance, and the 0.95 s rate slot must not shrink
-# a legally generated one-second step to 0.95 seconds after a backlog drains.
-MOTION_INTERVAL_S = 0.95
+# One physical sample may represent at most one second of motion. The wire
+# interval controls when samples start, independently of the distance fuse.
+MOTION_INTERVAL_S = 0.8
 STATIONARY_JITTER_MIN_M = 0.3
 STATIONARY_JITTER_MAX_M = 0.8
 MAX_MOTION_STEP_S = 1.0
@@ -516,7 +515,7 @@ class TrackGeometry:
 
     @staticmethod
     def prepare_anchors(points: Iterable[Any], closed: bool = True) -> list[dict[str, Any]]:
-        """Denoise user controls once; never move targets or open endpoints.
+        """Denoise controls once, preserving the first anchor, targets and open endpoints.
 
         A simultaneous 25% Laplacian pass is bounded to 0.75 m at noisy
         corners and 0.05 m on regular gentle bends, preserving calibrated ovals.
@@ -565,7 +564,7 @@ class TrackGeometry:
         result = []
         for index, node in enumerate(filtered):
             node = dict(node)
-            if not node["is_target"] and (closed or 0 < index < len(filtered)-1):
+            if index > 0 and not node["is_target"] and (closed or index < len(filtered)-1):
                 before, here, after = xy[index-1], xy[index], xy[(index+1) % len(xy)]
                 dx = 0.25*((before[0]+after[0])/2-here[0])
                 dy = 0.25*((before[1]+after[1])/2-here[1])
@@ -865,8 +864,6 @@ class BiomechanicalRunner(threading.Thread):
         self._geometry_limit_m = 0.5
         self._lateral_scale = 1.0
         self._lap = None
-        self._connector = None
-        self._connector_s = 0.0
         self._loop_s = 0.0
         self._detour = None
         self._detour_s = 0.0
@@ -993,16 +990,9 @@ class BiomechanicalRunner(threading.Thread):
             self.requested_target_m = target_km*1000
             self.target_m = self.requested_target_m + (self._rng.uniform(0, min(60.0, self.requested_target_m*0.03))
                                                        if extra_distance else 0.0)
-            # Randomise ALONG the track, never on an unconstrained 7 m disk.
-            # Follow its final arc to the named seam instead of a grass-cutting
-            # Hermite chord. This also works on a one-metre-wide running strip.
-            start_s = self._lap.length-self._rng.uniform(4.0, min(7.0, self._lap.length/2))
-            self.position = self._lap.sample(start_s)
+            self.position = self._lap.sample(0.0)
             self.start_point = _point(self.position)
-            connector = [self.start_point]+[p for p, s in zip(self._lap.points, self._lap.cumulative)
-                                            if s > start_s]
-            self._connector = _Route(connector)
-            self._connector_s = self._loop_s = self._detour_s = 0.0
+            self._loop_s = self._detour_s = 0.0
             self._detour = self._pending_detour = self._exit_remaining = None
             self.exit_idx = self.entry_idx = None
             self._detour_targets.clear()
@@ -1517,15 +1507,7 @@ class BiomechanicalRunner(threading.Thread):
         for _ in range(4096):
             if budget <= EPS_M:
                 break
-            if self._connector is not None:
-                move = min(budget, self._connector.length-self._connector_s)
-                self._connector_s += move
-                self.position = self._connector.sample(self._connector_s)
-                if self._connector_s >= self._connector.length-EPS_M:
-                    self._connector = None
-                    self._lap_start_time = self.elapsed_s+(travelled+move)/speed
-                    self._lap_start_distance = self.distance_m+travelled+move
-            elif self.state == RunnerState.CRUISING_LOOP:
+            if self.state == RunnerState.CRUISING_LOOP:
                 if self._pending_detour is not None and self._exit_remaining <= EPS_M:
                     pending = self._pending_detour
                     # The exit is approached on the loop. Only now is its exact
@@ -2768,14 +2750,11 @@ class IOSDeviceBridge:
     def _stationary_heartbeat(self, sample: tuple[int, float, float]) -> bool:
         return self._stationary and sample == self._latest and sample[0] == self._sent_sequence
 
-    def _next_send_time(self, sample: tuple[int, float, float]) -> Optional[float]:
+    def _next_send_time(self) -> Optional[float]:
         completed_at = self._last_send_completed_at if self._last_send_completed_at is not None else self._last_send_at
-        if completed_at is None:
-            return None
-        if self._stationary_heartbeat(sample) and self._last_send_at is not None:
-            # Maintain start-to-start cadence during a hold without overlapping calls.
-            return max(self._last_send_at+MOTION_INTERVAL_S, completed_at)
-        return completed_at+MOTION_INTERVAL_S
+        if self._last_send_at is None:
+            return completed_at
+        return max(self._last_send_at+MOTION_INTERVAL_S, completed_at)
 
     def _take_sample(self, reconnect: bool = False) -> Optional[tuple[int, float, float]]:
         with self._lock:
@@ -2787,7 +2766,7 @@ class IOSDeviceBridge:
                 return self._critical[0]
             if self._latest is None or reconnect or self._latest[0] > self._sent_sequence:
                 return self._latest
-            deadline = self._next_send_time(self._latest)
+            deadline = self._next_send_time()
             if self._last_send_completed_at is not None and deadline is not None and self._wire_clock() >= deadline:
                 return self._latest
             return None
@@ -2812,7 +2791,7 @@ class IOSDeviceBridge:
                 raise SpeedFuseError("speed fuse is latched; explicit restoration required")
             await self._wait_sync_calls()
             with self._lock:
-                deadline = self._next_send_time(sample)
+                deadline = self._next_send_time()
             if deadline is not None:
                 wait = deadline-self._wire_clock()
                 if wait > 1e-6:

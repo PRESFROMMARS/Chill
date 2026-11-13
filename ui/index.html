@@ -386,7 +386,14 @@
         <div id="vertex-list" class="vertex-list" role="list"></div>
         <div id="target-toggle-wrap" class="target-toggle hidden"><input id="target-toggle" type="checkbox"><label for="target-toggle" data-i18n="markTarget">将选中点设为必经打卡点</label></div>
         <div class="edit-actions"><button id="undo" class="text-button row" data-i18n-title="undo"><svg class="icon"><use href="#i-undo"/></svg><span data-i18n="undo">撤销上一点</span></button><button id="clear" class="text-button row"><svg class="icon"><use href="#i-trash"/></svg><span data-i18n="clear">清空重画</span></button></div>
-        <div id="track-width-wrap"><div class="track-width-row"><label for="track-width" data-i18n="trackWidth">跑道总宽（米）</label><input id="track-width" type="number" min="1" max="8" step="0.5" value="8" aria-describedby="track-width-note"></div><p id="track-width-note" class="small muted" data-i18n="trackWidthNote">基准线须位于红色跑道中线。宽度只限制相对基准线的偏移，不能自动识别底图边界。</p></div>
+        <div id="track-width-wrap">
+          <div class="track-width-row"><label for="track-width" data-i18n="trackWidth">跑道总宽（米）</label><input id="track-width" type="number" min="1" max="8" step="0.5" value="8" aria-describedby="track-width-note"></div>
+          <p id="track-width-note" class="small muted" data-i18n="trackWidthNote">基准线须位于红色跑道中线。宽度只限制相对基准线的偏移，不能自动识别底图边界。</p>
+          <div class="track-width-row"><label for="longitude-offset" data-i18n="longitudeOffset">经度微调（米）</label><input id="longitude-offset" type="number" step="1" value="0" aria-describedby="route-offset-note" disabled></div>
+          <div class="track-width-row"><label for="latitude-offset" data-i18n="latitudeOffset">纬度微调（米）</label><input id="latitude-offset" type="number" step="1" value="0" aria-describedby="route-offset-note" disabled></div>
+          <p id="route-offset-note" class="small muted" data-i18n="routeOffsetNote">经度正数向东、负数向西。纬度正数向北、负数向南。蓝线显示微调结果。</p>
+          <button id="apply-route-offset" class="save-track outline full" type="button" data-i18n="applyRouteOffset" disabled>应用微调</button>
+        </div>
         <button id="save-track" class="save-track outline full row" style="justify-content:center"><svg class="icon small-icon"><use href="#i-save"/></svg><span data-i18n="saveTrack">保存为默认跑道</span></button>
         <div id="draft-tools" class="hidden"><p class="draft-notice" data-i18n="draftNotice">金色虚线仅为草稿。确认切入前，蓝点继续沿操场巡航。</p><button id="activate-detour" class="activate primary full row" style="justify-content:center"><svg class="icon small-icon"><use href="#i-bolt"/></svg><span data-i18n="activateDetour">确认切入支线</span></button></div>
         <p id="editor-lock" class="editor-lock hidden" data-i18n="editorLocked">起点已锁定，操场跑道暂不可修改。仍可规划支线草稿。</p>
@@ -433,6 +440,9 @@
   'use strict';
   const i18n = {
     zh: {
+      longitudeOffset:'经度微调（米）',latitudeOffset:'纬度微调（米）',
+      routeOffsetNote:'经度正数向东、负数向西。纬度正数向北、负数向南。蓝线显示微调结果。',
+      applyRouteOffset:'应用微调',routeOffsetSaved:'已保存路线微调',invalid_route_offset:'请输入整数米数。',
       start_injecting:'正在向手机注入起点坐标…',
       start_interrupted:'起点锁定期间手机连接中断或定位发送受阻，倒计时已取消。请放弃本次会话并安全恢复定位后，再锁定起点。',
       holdPosition:'原地驻留（定点保活）',hold_unavailable:'请在暂停慢走或收尾慢走期间选择原地驻留。',
@@ -485,6 +495,9 @@
       skip:'跳至巡航面板',workbench:'轨迹工作台',searchPlaceholder:'搜索大学、地点或纬度, 经度',searchAria:'搜索地点或输入经纬度',preferences:'偏好设置',help:'使用指南',mapAria:'路线编辑地图',routeEditor:'路线编辑',editorSubtitle:'让每一步，都有清晰的方向。',trackTab:'操场跑道',detourTab:'支线草稿',trackInstruction:'沿跑道点击添加锚点，拖动锚点微调。闭环自动平滑并校正为逆时针。',detourInstruction:'沿道路添加引路点。选中锚点后，将它标记为必经打卡点。',undo:'撤销上一点',clear:'清空重画',saveTrack:'保存为默认跑道',markTarget:'将选中点设为必经打卡点',draftNotice:'金色虚线仅为草稿。确认切入前，蓝点继续沿操场巡航。',activateDetour:'确认切入支线',editorLocked:'起点已锁定，操场跑道暂不可修改。仍可规划支线草稿。',connectingApp:'正在连接工作台',todaySession:'今日巡航',metrics:'实时运动数据',km:'公里',metres:'米',todayTarget:'目标里程',goalBefore:'锁定起点后显示本次目标里程',goalEnded:'本次会话已结束',trackReadyNote:'跑道已就绪，锁定起点前请完成七项自检。',pace:'实时配速',perKm:'分/公里',elapsed:'运动用时',stride:'预估步幅',laps:'已完成圈数',profile:'巡航档位',standard:'标准档',highCadence:'高频摇步器档',targetInput:'目标公里',steps:'三步安全操作',lockStart:'锁定操场起点',lockSubtitle:'完成七项自检后驻留',startCruise:'开始拟真巡航',cruiseSubtitle:'先锁定起点并等待五秒',safeSettle:'安全结算并恢复',settleSubtitle:'手机提交成功后恢复定位',sessionNote:'先在地图上沿操场添加至少三个锚点。',coordinates:'实时坐标',mapCoordinate:'地图坐标',realCoordinate:'真实坐标',retry:'重试',fitTrack:'回到跑道',zoomIn:'放大地图',zoomOut:'缩小地图',hybrid:'卫星与路网',street:'标准街道',legendLoop:'逆时针跑道',legendDraft:'待确认支线',legendTarget:'十五米靶心区',state_IDLE:'绘制跑道，准备出发',state_LOCKED_START:'起点驻留中',state_CRUISING_LOOP:'沿操场逆时针巡航',state_CRUISING_DETOUR:'支线巡航，正在经过打卡点',state_SAFE_STOPPED:'运动已停止，等待安全恢复',sandbox:'沙盒预览模式',connected:'真机接管中',deviceReady:'真机已连接',deviceConnecting:'正在连接手机',restored:'恢复指令已发送',nodeCount:'{n} 个锚点',targetCount:'{n} 个打卡点',trackEmpty:'点击地图，添加第一个跑道锚点。',draftEmpty:'点击道路，规划第一段支线。',editing:'正在绘制',saved:'已保存',saving:'正在保存',smoothReady:'逆时针 · {n} 米',draftStatus:'尚未提交',targetLabel:'必经打卡点 {n}',anchorLabel:'锚点 {n}',guideLabel:'引路点 {n}',removePoint:'移除此点',goalRunning:'本次目标 {n} 公里，达到后继续慢走至手动结算',goalReached:'已达目标里程，仍在移动，请手动结算',countdown:'起点稳定中，还需 {n} 秒',openPhone:'现在可以打开手机应用并启动摇步器',cruiseReady:'起点已稳定，可以开始',loopNote:'巡航保持运行。需要临时打卡时，可在左侧规划支线。',pendingNote:'支线已确认，正在沿操场前往最近出口。',detourNote:'正在经过支线打卡点，完成后自动并回操场。',stoppedNote:'运动已结束，原地保持 {hold}。运动用时已停止计时，请完成安全结算。',restoredNote:'恢复指令已发送（请打开 iPhone 自带『地图』确认蓝点已回到真实位置；若未恢复，请重启手机）',sandboxNote:'未接管真机。所有里程与轨迹均由本机引擎计算。',batteryLow:'手机电量偏低：{n}%。请检查供电。',driverMissing:'没有检测到苹果设备驱动。请在 Microsoft Store 安装「Apple 设备」，重新插上 iPhone 后再打开 Chill。',driverStopped:'苹果移动设备服务尚未运行，真机连接可能不可用。',awakeIssue:'防休眠设置失败，请检查系统电源设置。',clockChecking:'正在校验系统时间',clockSynced:'系统时间校验通过 · 偏差 {n} 秒',clockSkew:'系统时间偏差 {n} 秒，请校正后重试',clockOffline:'外部校时不可达，请人工确认电脑与手机时间一致',clockStale:'校时结果已过期，请重新校验',clockNote:'使用服务器时间进行秒级偏差校验。超过三十秒会阻止锁定。',checklistTitle:'开跑前，确认这七件事',checklistIntro:'起点坐标发送后会驻留五秒。此时先不要打开手机运动应用。',check1:'手机已在系统设置中彻底关闭无线网络与蓝牙，仅使用第五代移动网络流量。',check2:'手机已关闭低电量模式，屏幕保持常亮并处于解锁状态。',check3:'手机已倒置或垫高，远离摇步器底座磁铁；数据线已绑紧固定。',check4:'运动应用已从手机多任务后台彻底向上划掉，确保下次冷启动。',check5:'已确认电脑与手机时间一致。',check6:'已核对跑道位置、巡航档位和本次目标里程。',confirmLock:'全部确认，锁定起点',cancel:'取消',understood:'我知道了',settleTitle:'先提交，再恢复真实定位',settleIntro:'请确认已在手机应用内完成提交、看到打卡成功，且已将手机应用从后台彻底划掉。确认后再恢复真实定位。',settleCheck1:'已在手机应用内提交本次运动记录。',settleCheck2:'已看到打卡成功或提交成功的结果。',settleCheck3:'已将手机运动应用从后台彻底划掉。',confirmRestore:'确认完成，恢复真实定位',restoring:'正在恢复定位',restoreWarning:'恢复失败时窗口仍会受到保护。请保持连接并重试。',closeTitle:'请先完成安全结算',closeWarning:'正在接管 iPhone 定位。请先完成第 3 步安全结算，再关闭窗口；直接退出可能中断模拟定位。',goSettle:'前往安全结算',clearTitle:'清空当前路线？',clearTrackBody:'当前跑道锚点将被清空。你可以使用撤销恢复。',clearDraftBody:'仅清空未提交的支线草稿，已确认的路线仍由引擎执行。',confirmClear:'清空锚点',activateTitle:'确认这条支线',activateBody:'共 {p} 个锚点、{t} 个必经打卡点。请确认路线沿道路行进，没有穿越建筑。蓝点会先沿操场到达出口，再平滑切入。',confirmActivate:'路线已检查，确认切入',helpTitle:'一张地图，三步出发',help1Title:'绘制与微调',help1:'点击地图放置跑道锚点，拖动调整。地图使用高德坐标，设备注入前由后端转换为真实坐标。',help2Title:'草稿与执行互不干扰',help2:'金色虚线不会改变当前巡航。标记必经点并确认后，才会排队前往操场出口。',help3Title:'结算后再恢复',help3:'先在手机应用提交并关闭，再点击安全结算。关闭窗口不会替你结束运行中的会话。',help4Title:'连接与时间',help4:'无真机时自动使用沙盒。真实定位的恢复与第三方应用的记录结果，需要在设备上确认。',helpStride:'步幅按每分钟一百九十二步估算。',working:'正在处理',searching:'正在搜索',noResults:'未找到地点。可尝试大学名称，或直接输入纬度, 经度。',remoteUnavailable:'在线建议暂不可用。可搜索内置高校，或输入纬度, 经度。',campus:'高校',place:'地点',coordinateSource:'坐标',mapUnavailable:'地图资源暂不可用，已切换为可编辑的本地坐标画布。',tilesUnavailable:'部分地图瓦片加载失败，可切换图层或重试。',backendUnavailable:'工作台连接中断，正在重试。后台巡航不受界面刷新影响。',offlineStatic:'请通过主程序启动，或使用本地预览模式打开。',trackSaved:'默认跑道已保存',detourQueued:'支线已确认，蓝点将先沿操场到达出口。',sessionStarted:'已开始逆时针巡航',locationRestored:'恢复指令已发送。',modeSwitched:'已切换至支线草稿，当前巡航继续运行。',config_load_failed:'配置读取失败，已加载默认设置。',config_save_failed:'配置未能保存，请检查文件写入权限。',invalid_points:'坐标无效，请检查锚点。',invalid_profile:'请选择有效的巡航档位。',invalid_target:'目标里程需为零点一至一百公里。',invalid_preferences:'偏好设置无效。',operation_failed:'操作未完成，请重试。',invalid_track:'跑道至少需要三个不同锚点，且不能全部共线。',track_locked:'会话运行时不能修改操场跑道或档位。',checklist_required:'请逐项确认全部七项自检。',clock_required:'请等待校时结果，或校正电脑时间后重新检查。',lock_failed:'无法锁定起点，请检查跑道后重试。',lock_first:'请先锁定起点。',countdown_active:'请等待起点驻留五秒完成。',target_required:'请至少标记一个必经打卡点。',cruise_first:'请先开始操场巡航，再确认切入支线。',detour_busy:'已有支线正在等待或执行，请完成后再提交。',invalid_detour:'支线无法生成，请沿外围道路添加引路点，避免跨越操场内场，并检查锚点距离。',settlement_required:'请确认手机提交成功，并已关闭运动应用。',settlement_busy:'正在执行安全结算，请稍候。',no_session:'当前没有需要恢复的会话。',restore_failed:'未能确认恢复定位。请保持手机连接并重试，暂时不要关闭窗口。',app_closed:'工作台已关闭，请重新启动。',invalid_search:'搜索内容无效。',invalid_request:'请求格式无效，请重试。',connectionLost:'暂时无法连接后端，请稍后重试。',newTarget:'添加打卡点',editLocked:'请切换到支线草稿，或先完成安全结算。'
     },
     en: {
+      longitudeOffset:'Longitude offset (m)',latitudeOffset:'Latitude offset (m)',
+      routeOffsetNote:'Use positive values for east and north, and negative values for west and south. The blue line shows the adjusted route.',
+      applyRouteOffset:'Apply offsets',routeOffsetSaved:'Route offsets saved',invalid_route_offset:'Enter offsets in whole metres.',
       start_injecting:'Sending the starting location to your iPhone…',
       start_interrupted:'The phone disconnected or location delivery was blocked during setup. The countdown was cancelled. Discard this session and restore location before locking the start again.',
       holdPosition:'Hold position',hold_unavailable:'You can hold your position during a walking break or the finishing walk.',
@@ -900,6 +913,23 @@
   async function previewTrack(sequence=++previewSequence) {try{const result=await api('preview_track',model.track);if(sequence!==previewSequence)return;model.curve=result.points;model.curveLength=result.length_m;renderEditor();mapView.render(Boolean(mapView.draggingLeaflet));scheduleTrackSave();}catch(error){if(sequence!==previewSequence)return;model.curve=[];model.curveLength=0;renderEditor();mapView.render(Boolean(mapView.draggingLeaflet));if(error.message!=='invalid_track'&&error.message!=='connectionLost')showError(error);}}
   function scheduleTrackSave() {clearTimeout(saveTimer);if(trackLocked()||!model.connected||model.track.length>0&&(model.track.length<3||!model.curveLength))return;saveTimer=setTimeout(async()=>{if(trackLocked())return;try{model.saving=true;renderEditor();await api('save_track',model.track);model.saving=false;renderEditor();}catch(error){model.saving=false;renderEditor();showError(error);}},700);}
   function saveView(){clearTimeout(viewTimer);viewTimer=setTimeout(()=>{if(model.connected)api('save_preferences',{map_center:mapView.center,map_zoom:mapView.zoom,layer:model.layer}).catch(showError);},700);}
+  function showRouteOffset(config) {
+    const [east,north]=config.route_offset_m ?? [0,0];
+    $('longitude-offset').value=east;
+    $('latitude-offset').value=north;
+  }
+  async function applyRouteOffset() {
+    await busyAction(async()=>{
+      const offset=[$('longitude-offset').valueAsNumber,$('latitude-offset').valueAsNumber];
+      if(!offset.every(Number.isSafeInteger))throw new Error('invalid_route_offset');
+      const config=await api('save_preferences',{route_offset_m:offset});
+      model.config=config;
+      showRouteOffset(config);
+      clearTimeout(previewTimer);
+      if(model.track.length>=3)await previewTrack(++previewSequence);
+      toast('routeOffsetSaved');
+    });
+  }
   let lastEditorRender='';
   function renderEditor() {
     const signature=JSON.stringify([model.language,model.mode,currentPoints(),model.selected,trackLocked(),model.curveLength,model.saving,model.busy,model.connected,model.history[model.mode].length,model.state?.state,model.state?.detour_pending,model.state?.stop_pending,model.state?.pause_phase]);
@@ -928,7 +958,7 @@
     const priorActive=model.state?.session_active;model.state=state;model.connected=true;
     if(priorActive!==state.session_active)mapView.render();
     const p=state.gcj_position;
-    if(p){const key=`${p.lat},${p.lon}`;if(key!==lastPositionKey){const now=performance.now(),from=motion?animatedPosition(now):[p.lat,p.lon];motion={from,to:[p.lat,p.lon],at:now,duration:state.state==='LOCKED_START'?0:950};lastPositionKey=key;}}
+    if(p){const key=`${p.lat},${p.lon}`;if(key!==lastPositionKey){const now=performance.now(),from=motion?animatedPosition(now):[p.lat,p.lon];motion={from,to:[p.lat,p.lon],at:now,duration:state.state==='LOCKED_START'?0:(state.motion_interval_s??0.8)*1000};lastPositionKey=key;}}
     else if(motion){motion=null;mapView.setPosition(null);}
     if(state.state==='LOCKED_START'&&state.start_phase==='ready'&&!announcedReady){announcedReady=true;toast('openPhone');}
     if(state.state!=='LOCKED_START')announcedReady=false;
@@ -961,6 +991,8 @@
     $('gcj-coordinate').textContent=formatCoordinate(s.gcj_position);$('wgs-coordinate').textContent=formatCoordinate(s.position);
     $('profile').disabled=active||model.busy;$('target-km').disabled=active||model.busy;
     $('track-width').disabled=active||model.busy;
+    const offsetDisabled=active||s.preparing||s.settling||model.busy||!model.connected;
+    for(const id of ['longitude-offset','latitude-offset','apply-route-offset'])$(id).disabled=offsetDisabled;
     $('extra-distance').disabled=active||model.busy;
     $('session-options').classList.toggle('hidden',active&&cruising);
     const inputKm=Number($('target-km').value)||0;
@@ -972,7 +1004,7 @@
     $('hold-position').disabled=!holdAvailable||!model.connected||model.busy||s.settling;
     const restLabel=t(s.target_walking?'targetWalkingButton':{running:'restButton',slowing:'restSlowing',WALKING_REST:'restEnd',resuming:'restResuming'}[phase]);
     if($('rest-toggle').textContent!==restLabel)$('rest-toggle').textContent=restLabel;
-    $('rest-toggle').disabled=!model.connected||model.busy||!active||!cruising||s.finishing||(s.control_cooldown_s||0)>0||performance.now()<restCooldownUntil||s.elapsed_s<0.95||['slowing','resuming'].includes(phase)||(s.stop_pending&&phase!=='WALKING_REST');
+    $('rest-toggle').disabled=!model.connected||model.busy||!active||!cruising||s.finishing||(s.control_cooldown_s||0)>0||performance.now()<restCooldownUntil||s.elapsed_s<(s.motion_interval_s??0.8)||['slowing','resuming'].includes(phase)||(s.stop_pending&&phase!=='WALKING_REST');
     $('rest-status').textContent=t(s.target_walking?'targetWalkingNote':{running:'restRunningNote',slowing:'restSlowingNote',WALKING_REST:'restRestingNote',resuming:'restResumingNote'}[phase],{n:Math.max(0,Math.ceil((s.walk_duration_s||50)-(s.rest_elapsed_s||0)))});
     $('rest-times').textContent=t('restTimes',{current:formatDuration(s.rest_elapsed_s||0),total:formatDuration(s.rest_total_s||0),session:formatDuration(s.session_elapsed_s??s.elapsed_s)});
     $('lock-start').disabled=active||model.busy||model.track.length<3||!model.curveLength||!model.connected||s.recovery_required||s.recovering||s.preparing;
@@ -1073,6 +1105,7 @@
   $('lang-zh').addEventListener('click',()=>setLanguage('zh'));$('lang-en').addEventListener('click',()=>setLanguage('en'));
   $('mode-track').addEventListener('click',()=>switchMode('track'));$('mode-detour').addEventListener('click',()=>switchMode('detour'));
   $('help').addEventListener('click',()=>openModal('help'));
+  $('apply-route-offset').addEventListener('click',applyRouteOffset);
   $('undo').addEventListener('click',()=>{if(model.mode==='track'&&trackLocked())return;const previous=model.history[model.mode].pop();if(previous){if(model.mode==='track')model.track=previous;else model.draft=previous;model.selected=-1;edited();}});
   $('clear').addEventListener('click',()=>openModal('clear'));
   $('save-track').addEventListener('click',()=>busyAction(async()=>{clearTimeout(saveTimer);await api('save_track',model.track);toast('trackSaved');}));
@@ -1105,7 +1138,7 @@
   document.addEventListener('keydown',event=>{if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();$('search').focus();}if(model.modal){if(event.key==='Escape'&&!model.busy)closeModal();if(event.key==='Tab'){const focusable=[...$('dialog').querySelectorAll('button:not(:disabled),input:not(:disabled),[tabindex="0"]')];if(focusable.length){const first=focusable[0],last=focusable[focusable.length-1];if(event.shiftKey&&(document.activeElement===first||document.activeElement===$('dialog'))){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}}}return;}if(!event.target.matches('input,select,textarea')&&(event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='z'){event.preventDefault();$('undo').click();}});
   window.addEventListener('beforeunload',event=>{if(trackLocked()){event.preventDefault();event.returnValue='';}});
   window.Chill=window.Piggy={requestCloseWarning:()=>openModal('close')};
-  async function bootstrap(){try{const data=await api('bootstrap');model.config=data.config;model.language=data.config.language;model.track=data.config.track_points;model.layer=data.config.layer;model.activePath=data.active_path||[];$('profile').value=data.config.profile;$('target-km').value=data.config.target_km.toFixed(1);$('track-width').value=data.config.track_width_m??8;$('extra-distance').checked=Boolean(data.config.extra_distance);mapView.setView(data.config.map_center,data.config.map_zoom);mapView.setLayer(model.layer);acceptState(data.state);applyLanguage();if(model.track.length>=3){await previewTrack(++previewSequence);mapView.fit(model.track);}mapView.render();considerTutorial();return true;}catch(error){toast(error.message==='offlineStatic'?'offlineStatic':'connectionLost',{},true);return false;}}
+  async function bootstrap(){try{const data=await api('bootstrap');model.config=data.config;showRouteOffset(data.config);model.language=data.config.language;model.track=data.config.track_points;model.layer=data.config.layer;model.activePath=data.active_path||[];$('profile').value=data.config.profile;$('target-km').value=data.config.target_km.toFixed(1);$('track-width').value=data.config.track_width_m??8;$('extra-distance').checked=Boolean(data.config.extra_distance);mapView.setView(data.config.map_center,data.config.map_zoom);mapView.setLayer(model.layer);acceptState(data.state);applyLanguage();if(model.track.length>=3){await previewTrack(++previewSequence);mapView.fit(model.track);}mapView.render();considerTutorial();return true;}catch(error){toast(error.message==='offlineStatic'?'offlineStatic':'connectionLost',{},true);return false;}}
   let bootstrapped=false,lastBackendNotice=0;
   async function poll(){const started=performance.now();try{if(!bootstrapped)bootstrapped=await bootstrap();else acceptState(await api('get_state'));}catch(error){model.connected=false;renderState();if(Date.now()-lastBackendNotice>15000){toast('backendUnavailable',{},true);lastBackendNotice=Date.now();}}finally{setTimeout(poll,Math.max(20,100-(performance.now()-started)));}}
   mapView=new MapView();applyLanguage();mapView.render();requestAnimationFrame(animate);poll();

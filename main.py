@@ -12,6 +12,7 @@ import ctypes
 import functools
 import json
 import logging
+import math
 import multiprocessing
 import os
 from pathlib import Path
@@ -118,6 +119,24 @@ def _extra_distance(value: Any) -> bool:
     return value
 
 
+def _route_offset(value: Any) -> tuple[int, int]:
+    if (not isinstance(value, (list, tuple)) or len(value) != 2
+            or any(type(metres) is not int or abs(metres) > 2**53-1 for metres in value)):
+        raise AppError("invalid_route_offset")
+    return tuple(value)
+
+
+def _route_points_wgs84(points: list[dict], offset_m: tuple[int, int]):
+    east, north = offset_m
+    distance = math.hypot(east, north)
+    bearing = math.degrees(math.atan2(east, north))
+    for point in points:
+        lon, lat = engine.gcj02_to_wgs84(point["lon"], point["lat"])
+        if distance:
+            lat, lon = engine._destination((lat, lon), bearing, distance)
+        yield {**point, "lat": lat, "lon": lon}
+
+
 class ConfigStore:
     """Validated atomic configuration; failed writes never replace live config."""
 
@@ -126,7 +145,8 @@ class ConfigStore:
         self._lock = threading.RLock()
         self.issue = None
         self._data = {"version": 1, "language": "zh", "profile": "standard", "target_km": 2.0,
-                      "track_points": [], "track_width_m": 8.0, "extra_distance": False, "map_center": DEFAULT_CENTER, "map_zoom": 17, "layer": "hybrid"}
+                      "track_points": [], "track_width_m": 8.0, "route_offset_m": (0, 0),
+                      "extra_distance": False, "map_center": DEFAULT_CENTER, "map_zoom": 17, "layer": "hybrid"}
         try:
             if self.path.exists():
                 if self.path.stat().st_size > 2*1024*1024:
@@ -151,6 +171,7 @@ class ConfigStore:
         return {"version": 1, "language": data["language"], "profile": _profile(data["profile"]),
                 "target_km": _target(data["target_km"]), "track_points": _points(data["track_points"]),
                 "track_width_m": _track_width(data.get("track_width_m", 8.0)),
+                "route_offset_m": _route_offset(data.get("route_offset_m", (0, 0))),
                 "extra_distance": _extra_distance(data.get("extra_distance", False)),
                 "map_center": [center["lat"], center["lon"]], "map_zoom": zoom, "layer": data["layer"]}
 
@@ -586,6 +607,7 @@ class DesktopAPI:
             state["device_issue"] = bool(state["device"].get("last_error"))
             state["device_error"] = engine._diagnostic_text(state["device"].get("last_error") or "")
             state["engine_issue"] = state.get("stop_reason") == "engine_error"
+            state["motion_interval_s"] = engine.MOTION_INTERVAL_S
             state["stride_estimate_m"] = state["speed_mps"]/(192/60) if state["speed_mps"] > 0 else 0.0
             return state
 
@@ -612,22 +634,20 @@ class DesktopAPI:
     def save_preferences(self, preferences: dict) -> dict:
         if not isinstance(preferences, dict):
             raise AppError("invalid_preferences")
-        allowed = {"language", "profile", "target_km", "track_width_m", "extra_distance", "map_center", "map_zoom", "layer"}
+        route_options = {"profile", "target_km", "track_width_m", "extra_distance", "route_offset_m"}
+        allowed = route_options | {"language", "map_center", "map_zoom", "layer"}
         if set(preferences)-allowed:
             raise AppError("invalid_preferences")
         with self._lock:
-            if {"profile", "target_km", "track_width_m", "extra_distance"}.intersection(preferences):
+            if route_options.intersection(preferences):
                 self._idle_required()
             return self._config.update(preferences)
 
     @staticmethod
-    def _geometry(points: list[dict]) -> tuple[list[tuple], engine.TrackGeometry]:
+    def _geometry(points: list[dict], offset_m: tuple[int, int] = (0, 0)) -> tuple[list[tuple], engine.TrackGeometry]:
         try:
             # Map anchors are GCJ-02. The engine and all wire fixes use WGS-84.
-            wgs = []
-            for p in points:
-                lon, lat = engine.gcj02_to_wgs84(p["lon"], p["lat"])
-                wgs.append((lat, lon))
+            wgs = [engine._point(p) for p in _route_points_wgs84(points, offset_m)]
             geometry = engine.TrackGeometry(wgs)
             if geometry.length_m < 10:
                 raise ValueError("track too short")
@@ -640,7 +660,7 @@ class DesktopAPI:
     @rpc
     def preview_track(self, points: list) -> dict:
         points = _points(points, minimum=3)
-        _, geometry = self._geometry(points)
+        _, geometry = self._geometry(points, self._config.read()["route_offset_m"])
         # A 1 m render path is plenty; engine retains its 0.5 m samples.
         rendered = []
         for node in geometry.points[::2]:
@@ -651,12 +671,12 @@ class DesktopAPI:
     @rpc
     def save_track(self, points: list) -> dict:
         points = _points(points)
-        if points:
-            if len(points) < 3:
-                raise AppError("invalid_track")
-            self._geometry(points)
+        if points and len(points) < 3:
+            raise AppError("invalid_track")
         with self._lock:
             self._idle_required()
+            if points:
+                self._geometry(points, self._config.read()["route_offset_m"])
             return self._config.update({"track_points": points})
 
     @rpc
@@ -691,11 +711,15 @@ class DesktopAPI:
             raise AppError("checklist_required")
         points = _points(payload.get("points"), minimum=3)
         profile, target = _profile(payload.get("profile")), _target(payload.get("target_km"))
-        width = _track_width(payload.get("track_width_m", self._config.read()["track_width_m"]))
-        extra = _extra_distance(payload.get("extra_distance", self._config.read()["extra_distance"]))
-        wgs, geometry = self._geometry(points)
+        config = self._config.read()
+        width = _track_width(payload.get("track_width_m", config["track_width_m"]))
+        extra = _extra_distance(payload.get("extra_distance", config["extra_distance"]))
+        offset_m = config["route_offset_m"]
+        wgs, geometry = self._geometry(points, offset_m)
         with self._lock:
             self._idle_required()
+            if offset_m != self._config.read()["route_offset_m"]:
+                raise AppError("operation_in_progress")
             if self._recovery_required:
                 raise AppError("recovery_required")
             clock_status = self._clock["status"]
@@ -791,15 +815,13 @@ class DesktopAPI:
         draft = _points(points, minimum=1, targets=True)
         if not any(p["is_target"] for p in draft):
             raise AppError("target_required")
-        converted = []
-        for p in draft:
-            lon, lat = engine.gcj02_to_wgs84(p["lon"], p["lat"])
-            converted.append({**p, "lat": lat, "lon": lon})
         with self._lock:
             if self._settling or not self._session_active or self._runner.state != engine.RunnerState.CRUISING_LOOP:
                 raise AppError("cruise_first")
             runner = self._runner
+            offset_m = self._config.read()["route_offset_m"]
         try:
+            converted = list(_route_points_wgs84(draft, offset_m))
             result = runner.submit_detour(converted)
         except engine.GeometryBudgetError:
             raise AppError("route_too_complex") from None
@@ -810,6 +832,9 @@ class DesktopAPI:
         with self._lock:
             if self._closed or self._settling or self._runner is not runner or not self._session_active:
                 raise AppError("detour_busy")
+            if any(offset_m):
+                for raw, shifted in zip(draft, converted):
+                    raw["lon"], raw["lat"] = engine.wgs84_to_gcj02(shifted["lon"], shifted["lat"])
             self._active_detour = draft
             return {**result, "path": self._active_path(), "state": self._state()}
 

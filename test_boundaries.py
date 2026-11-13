@@ -348,7 +348,6 @@ class BoundaryTests(unittest.TestCase):
     def test_target_history_rolls_while_total_visited_is_preserved(self):
         runner = self.runner()
         runner.state = e.RunnerState.CRUISING_DETOUR
-        runner._connector = None
         runner._detour = e._Route([ORIGIN, ORIGIN], allow_zero=True)
         total = runner.TARGET_HISTORY_LIMIT+5
         runner._detour_targets.extend({"s_m": 0, "id": index, "lat": ORIGIN[0], "lon": ORIGIN[1]}

@@ -48,6 +48,29 @@ class APICase(unittest.TestCase):
 
 
 class ConfigTests(APICase):
+    def test_global_offset_applies_to_preview_and_first_wire_sample(self):
+        self.assertEqual(self.api.bootstrap()["data"]["config"]["route_offset_m"], [0, 0])
+        self.assertTrue(self.api.save_track(TRACK)["ok"])
+        for invalid in ([1.5, 0], [True, 0], [0], ["1", 0]):
+            self.assertEqual(self.api.save_preferences({"route_offset_m": invalid})["error"]["code"],
+                             "invalid_route_offset")
+        self.assertTrue(self.api.save_preferences({"route_offset_m": [3, -4]})["ok"])
+        config = main.ConfigStore(self.path).read()
+        self.assertEqual(config["route_offset_m"], [3, -4])
+        self.assertEqual(config["track_points"], TRACK)
+        preview = self.api.preview_track(TRACK)["data"]
+
+        bridge = self.api._bridge
+        with patch.object(bridge, "set_location", wraps=bridge.set_location) as send:
+            state = self.lock()
+        lon, lat = engine.gcj02_to_wgs84(TRACK[0]["lon"], TRACK[0]["lat"])
+        point = send.call_args_list[0].args
+        east, north = engine._Projection((lat, lon)).xy(point)
+        self.assertAlmostEqual(east, 3, places=4)
+        self.assertAlmostEqual(north, -4, places=4)
+        self.assertEqual(preview["points"][0], [state["gcj_position"]["lat"], state["gcj_position"]["lon"]])
+        self.assertEqual(self.api.save_preferences({"route_offset_m": [0, 0]})["error"]["code"], "track_locked")
+
     def test_width_persists_validates_and_is_locked_during_a_session(self):
         self.assertTrue(self.api.save_preferences({'track_width_m': 2})['ok'])
         self.assertEqual(main.ConfigStore(self.path).read()['track_width_m'], 2)
@@ -362,7 +385,8 @@ class SafetyTests(APICase):
         self.assertAlmostEqual(gcj["lon"], lon, places=10)
         self.assertNotAlmostEqual(wgs["lon"], gcj["lon"], places=4)
         first = TRACK[0]
-        self.assertLess(engine.haversine_distance(first["lat"], first["lon"], lat, lon), 7.1)
+        first_lon, first_lat = engine.gcj02_to_wgs84(first["lon"], first["lat"])
+        self.assertEqual((wgs["lat"], wgs["lon"]), (first_lat, first_lon))
 
     def test_active_track_and_profile_are_immutable_but_language_is_not(self):
         self.lock()

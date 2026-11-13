@@ -345,6 +345,25 @@ async function checkWalkingControlCooldown(){
 }
 checkWalkingControlCooldown().catch(error=>{console.error(error);process.exitCode=1;});
 
+async function checkRouteOffsets(){
+  const start=html.indexOf('  function showRouteOffset(');
+  const end=html.indexOf("  let lastEditorRender=",start);
+  const input={'longitude-offset':{valueAsNumber:3},'latitude-offset':{valueAsNumber:-4}};
+  const state={track:[{},{},{}]},calls=[];
+  const apply=new Function('$','api','busyAction','model','previewTrack','clearTimeout','previewTimer','toast',
+    'let previewSequence=0;'+html.slice(start,end)+';return applyRouteOffset;')(
+    id=>input[id],async(method,prefs)=>{calls.push([method,prefs]);return prefs;},
+    async fn=>fn(),state,async()=>calls.push('preview'),()=>{},0,()=>{});
+  await apply();
+  assert.deepEqual(calls,[['save_preferences',{route_offset_m:[3,-4]}],'preview']);
+  assert.equal(input['latitude-offset'].value,-4);
+  input['longitude-offset'].valueAsNumber=0.5;
+  await assert.rejects(apply(),/invalid_route_offset/);
+  assert.equal(calls.length,2);
+  for(const id of Object.keys(input))assert.match(html,new RegExp(`id="${id}" type="number" step="1"`));
+}
+checkRouteOffsets().catch(error=>{console.error(error);process.exitCode=1;});
+
 // An earlier dirty session is visible before cruise and blocks a new lock.
 for (const language of ['zh','en']) {
   presentationLanguage=language;

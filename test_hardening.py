@@ -460,7 +460,6 @@ raise SystemExit(main.main(['--piggy-tunneld','--help']))
 
     def test_next_lap_timeout_uses_safe_existing_geometry_without_rng_or_seam_damage(self):
         runner = self.runner()
-        runner._connector = None
         runner._loop_s = runner._lap.length-1
         lap, rng = runner._lap, runner._geometry_rng.getstate()
         with patch.object(runner, "_make_lap", side_effect=e.GeometryBudgetError("timeout")):
@@ -477,7 +476,6 @@ raise SystemExit(main.main(['--piggy-tunneld','--help']))
         runner = self.runner()
         target = e._destination(ORIGIN, 120, 100)
         runner.submit_detour([{"lat": target[0], "lon": target[1], "is_target": True}])
-        runner._connector = None
         runner._loop_s = runner._lap.cumulative[runner.exit_idx]
         runner.position = runner._lap.sample(runner._loop_s)
         runner._exit_remaining = 0

@@ -132,12 +132,13 @@ class AuditTests(unittest.TestCase):
         async def exercise():
             with patch.object(e.asyncio,'sleep',side_effect=advance):
                 await asyncio.gather(*(b._send((n,*ORIGIN)) for n in range(5)))
-            b._latest=(5,*ORIGIN);clock.t+=.95
+            b._latest=(5,*ORIGIN);clock.t+=.8
             self.assertIsNotNone(b._take_sample())
             await b._send(b._take_sample())
         asyncio.run(exercise())
         self.assertEqual(len(rec.calls),6)
-        self.assertTrue(all(.9<=c[0]-a[0]<=1.000001 for a,c in zip(rec.calls,rec.calls[1:])))
+        for a,c in zip(rec.calls,rec.calls[1:]):
+            self.assertAlmostEqual(c[0]-a[0], .8)
 
     def test_04_outage_is_reported_and_does_not_allow_catch_up_jump(self):
         clock,b,r,rec=self.make()
@@ -308,18 +309,19 @@ class AuditTests(unittest.TestCase):
 
     def test_14_walking_detour_delivers_repeated_checkpoints_with_a_buffer(self):
         clock,b,r,rec=self.make()
+        interval=e.MOTION_INTERVAL_S
         target=e._destination(ORIGIN,120,100)
         speeds=[];paused=False;crossings=[];arrival_ticks=set()
         async def exercise():
             nonlocal paused
             await b._send(b._take_sample())
             for tick in range(600):
-                clock.t+=.95
+                clock.t+=interval
                 if tick==20:r.submit_detour([{'lat':target[0],'lon':target[1],'is_target':True,'id':n} for n in (1,2)])
                 if r.state==e.RunnerState.CRUISING_DETOUR and not paused:r.pause();paused=True
                 before=r.distance_m;state=r.step()
                 await b._send(b._take_sample())
-                speed=(r.distance_m-before)/.95
+                speed=(r.distance_m-before)/interval
                 self.assertGreaterEqual(speed,0)
                 self.assertLessEqual(speed,3.8+1e-6)
                 reached=False
@@ -333,7 +335,7 @@ class AuditTests(unittest.TestCase):
                         self.assertEqual((event['sample_lat'],event['sample_lon']),rec.calls[-1][1:])
                 # The dedicated arrival sample truncates travel once. Recovery
                 # and every other motion command still obey the slew limit.
-                if speeds and not reached:self.assertLess(abs(speed-speeds[-1])/.95,.6)
+                if speeds and not reached:self.assertLess(abs(speed-speeds[-1])/interval,.6)
                 if e.haversine_distance(*target,*e._point(state['position']))>10:
                     self.assertGreaterEqual(speed,1.2-1e-6)
                 speeds.append(speed)
@@ -346,7 +348,7 @@ class AuditTests(unittest.TestCase):
         self.assertGreaterEqual(min(wire),0)
         self.assertLessEqual(max(wire),3.8)
         self.assertEqual(len(arrival_ticks),1)  # Co-located IDs share one sample.
-        maximum_acceleration=max(abs(c-a)/.95 for i,(a,c) in enumerate(zip(wire,wire[1:]),1)
+        maximum_acceleration=max(abs(c-a)/interval for i,(a,c) in enumerate(zip(wire,wire[1:]),1)
                                  if i not in arrival_ticks)
         self.assertLess(maximum_acceleration,.6)
         REPORT['detour']={'ticks':600,'checkpoints_crossed':len(crossings),'min_wire_speed_mps':min(wire),'max_wire_acceleration_mps2':maximum_acceleration}

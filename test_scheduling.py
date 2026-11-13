@@ -57,7 +57,7 @@ class SchedulingTests(unittest.TestCase):
         bridge._wire_clock = lambda: wall[0]
         starts, _ = self.simulator(bridge, wall)
         asyncio.run(bridge._send(bridge._take_sample()))
-        gaps = iter((1.01, 1.5, 1.9, 60.0, .95))
+        gaps = iter((1.01, 1.5, 1.9, 60.0, e.MOTION_INTERVAL_S))
         advances = []
         original_tick = runner._tick
 
@@ -80,9 +80,10 @@ class SchedulingTests(unittest.TestCase):
              patch.object(e.time, "monotonic", side_effect=lambda: wall[0]), \
              patch.object(runner, "_tick", side_effect=tick):
             runner.run()
-        for actual, expected in zip(advances, [1.0, 1.0, 1.0, .95, .95]):
+        expected_steps = [1.0, 1.0, e.MOTION_INTERVAL_S, e.MOTION_INTERVAL_S, e.MOTION_INTERVAL_S]
+        for actual, expected in zip(advances, expected_steps):
             self.assertAlmostEqual(actual, expected)
-        self.assertAlmostEqual(runner.elapsed_s, 4.9)
+        self.assertAlmostEqual(runner.elapsed_s, sum(expected_steps))
         self.assertEqual(len(starts), 6)
         self.assertFalse(bridge.snapshot()["speed_fuse_tripped"])
 
@@ -172,35 +173,37 @@ class SchedulingTests(unittest.TestCase):
         self.assertEqual(bridge.snapshot()["pending_critical_samples"], 0)
         self.assertEqual(e._point(bridge.last_delivered_position), checkpoint)
 
-    def test_rate_limit_measures_previous_completion_to_next_start(self):
-        clock = [0.0]
-        bridge = self.bridge(clock=lambda: clock[0])
-        starts, ends = self.simulator(bridge, clock, latency=.8)
-        bridge.set_location(*ORIGIN)
+    def test_rate_limit_uses_send_start_without_overlapping_calls(self):
+        for latency in (.3, 1.1):
+            with self.subTest(latency=latency):
+                clock = [0.0]
+                bridge = self.bridge(clock=lambda: clock[0])
+                starts, ends = self.simulator(bridge, clock, latency=latency)
+                bridge.set_location(*ORIGIN)
 
-        async def sleep(seconds):
-            clock[0] += seconds
+                async def sleep(seconds):
+                    clock[0] += seconds
 
-        async def exercise():
-            await bridge._send(bridge._take_sample())
-            with patch.object(e.asyncio, "sleep", side_effect=sleep):
-                await asyncio.gather(bridge._send((2, *ORIGIN)), bridge._send((3, *ORIGIN)))
-            for end, start in zip(ends, starts[1:]):
-                self.assertGreaterEqual(start-end, .95-1e-8)
-            self.assertAlmostEqual(bridge._last_send_completed_at, ends[-1])
-            self.assertAlmostEqual(bridge._last_send_at, starts[-1])
+                async def exercise():
+                    await bridge._send(bridge._take_sample())
+                    with patch.object(e.asyncio, "sleep", side_effect=sleep):
+                        await asyncio.gather(bridge._send((2, *ORIGIN)), bridge._send((3, *ORIGIN)))
 
-        asyncio.run(exercise())
+                asyncio.run(exercise())
+                self.assertEqual(len(starts), 3)
+                for prior, end, start in zip(starts, ends, starts[1:]):
+                    self.assertGreaterEqual(start, end-1e-8)
+                    self.assertAlmostEqual(start-prior, max(.8, latency))
+                self.assertAlmostEqual(bridge._last_send_completed_at, ends[-1])
+                self.assertAlmostEqual(bridge._last_send_at, starts[-1])
 
     def test_heartbeat_waits_for_completion_and_clear_resets_both_clocks(self):
         clock = [0.0]
         bridge = self.bridge(sandbox=True, clock=lambda: clock[0])
-        self.simulator(bridge, clock, latency=.8)
+        self.simulator(bridge, clock, latency=1.1)
         bridge.set_location(*ORIGIN)
         asyncio.run(bridge._send(bridge._take_sample()))
-        clock[0] = 1.74
-        self.assertIsNone(bridge._take_sample())
-        clock[0] = 1.76
+        self.assertAlmostEqual(bridge._next_send_time(), 1.1)
         self.assertIsNotNone(bridge._take_sample())
         self.assertTrue(bridge.clear_location())
         self.assertIsNone(bridge._last_send_completed_at)
@@ -221,9 +224,9 @@ class SchedulingTests(unittest.TestCase):
             await bridge._send(bridge._take_sample())
             positions.append(e._point(bridge.last_delivered_position))
             for _ in range(12):
-                clock[0] = starts[-1]+.94
+                clock[0] = starts[-1]+e.MOTION_INTERVAL_S-.01
                 self.assertIsNone(bridge._take_sample())
-                clock[0] = starts[-1]+.96
+                clock[0] = starts[-1]+e.MOTION_INTERVAL_S+.01
                 runner.step()
                 await bridge._send(bridge._take_sample())
                 positions.append(e._point(bridge.last_delivered_position))
@@ -293,7 +296,7 @@ class SchedulingTests(unittest.TestCase):
                         # slot in _serve(). They must not starve moving samples.
                         while bridge._latest is not None:
                             completed = bridge._last_send_completed_at
-                            due = clock[0] if completed is None else max(clock[0], completed+e.MOTION_INTERVAL_S)
+                            due = clock[0] if completed is None else max(clock[0], completed, starts[-1]+e.MOTION_INTERVAL_S)
                             if due > target+1e-8:
                                 break
                             clock[0] = due
@@ -318,8 +321,9 @@ class SchedulingTests(unittest.TestCase):
                     # Prevent a "fix" that merely halves the simulated pace.
                     self.assertGreater(runner.elapsed_s, 2400)
                     self.assertLessEqual(runner.elapsed_s, clock[0])
-                    for end, start in zip(ends, starts[1:]):
-                        self.assertGreaterEqual(start-end, e.MOTION_INTERVAL_S-1e-7)
+                    for prior, end, start in zip(starts, ends, starts[1:]):
+                        self.assertGreaterEqual(start, end-1e-7)
+                        self.assertAlmostEqual(start-prior, .8, places=6)
                     for a, b in zip(positions, positions[1:]):
                         self.assertLessEqual(e.haversine_distance(*a, *b), e.MAX_SAMPLE_DISTANCE_M+1e-5)
                 finally:

@@ -262,7 +262,7 @@ class PrecisionTests(unittest.TestCase):
             with patch.object(e.asyncio, "sleep", side_effect=produce_while_waiting):
                 await bridge._send(sample)
             self.assertEqual(wire[-1][1:], target)
-            self.assertAlmostEqual(wire[-1][0]-wire[-2][0], .95)
+            self.assertAlmostEqual(wire[-1][0]-wire[-2][0], .8)
             self.assertEqual(bridge.snapshot()["pending_samples"], 1)
             bridge.set_location(*e._destination(target, 0, 100), critical=True)
             clock[0] += .95
