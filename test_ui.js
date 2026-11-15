@@ -225,6 +225,17 @@ for(const [phase,seconds] of [['injecting',0],['countdown',4],['interrupted',0],
   if(phase==='injecting')assert.equal(element('session-note').textContent,dictionary.zh.start_injecting);
   if(phase==='interrupted')assert.equal(element('session-error').textContent,dictionary.zh.start_interrupted);
 }
+for(const [warmup_glide,warmup_window_s,warmup_start_pending,note] of [
+  [true,15,false,'warmupOpen'],[true,4,false,'warmupNext'],
+  [true,0,true,'warmupTurning'],[false,0,false,'warmupUnavailable']
+]) {
+  presentationModel.state={...initialPresentation,state:'LOCKED_START',session_active:true,
+    start_phase:'ready',warmup_glide,warmup_window_s,warmup_start_pending};
+  present();
+  assert.equal(element('session-note').textContent,dictionary.zh[note]);
+  assert.equal(element('start-cruise').disabled,warmup_start_pending);
+  assert(!element('discard-session').disabled);
+}
 for(const phase of ['running','slowing','WALKING_REST']) {
   presentationModel.state={...initialPresentation,state:'CRUISING_LOOP',session_active:true,pause_phase:phase};
   present();

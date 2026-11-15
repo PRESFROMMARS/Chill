@@ -142,7 +142,10 @@ Windows 打包版在桥接线程使用 Selector 事件循环，优先走进程�
 失败后复用本地 Tunneld，或启动 Tunneld 子进程并等待它发布目标 iPhone。
 仍有自建 Tunneld 运行时，重连继续走这条路径，避免同时打开另一条 userspace 隧道。
 启动参数固定在回环地址，使用 TCP；不会交互式提权。进程清理只处理本实例创建的子进程。
-每次新建会话都先在 RSD 上检查和挂载 DDI，再开启持久的 DVT 与 `LocationSimulation` 会话。
+每次新建会话都先在 RSD 上检查和挂载 DDI，再通过
+`get_service_features("com.apple.coredevice.locationservice")` 检查 CoreDevice，并保留持久的 DVT
+`LocationSimulation` 作为备用。CoreDevice 缺失、未宣布该能力或调用失败时，DVT 保留原发送路径；
+调用失败的同一队列样本转交 DVT，切换后本次定位会话不再尝试 CoreDevice 写入。
 按设备能力选择 Personalized 或 Cryptex，并将通过 SHA-256 校验的本地路径显式交给驱动。
 冻结版内置这两套镜像；首次安装所需的 Apple TSS 个性化签名仍由驱动处理。
 随 `main.py` 打包为独立可执行文件时，桥接层通过隐藏的 `--piggy-tunneld` 入口启动
@@ -195,6 +198,24 @@ POSIX 使用 `flock(LOCK_EX|LOCK_NB)`，Windows 使用单字节 `msvcrt.locking`
 USB 断开期间物理发送无法保证。所有发送仍经过速度熔断器；积压溢出或距离过远时锁存阻断。
 `device.pending_critical_samples` 表示等待设备发送调用成功的关键样本数；显式恢复定位会清空队列。
 电量查询失败时使用 `None` 与 `battery_error`，不把未知电量当作充足。
+
+本机 `CoreDeviceUtilities` 651.13.5 的字符串与 Swift 类型元数据确认：
+
+| Feature | Action | `CoreDevice.input` |
+| --- | --- | --- |
+| `com.apple.coredevice.feature.simulatelocation` | `com.apple.coredevice.action.setsimulatedlocation` | `{"latitude": Double, "longitude": Double}` |
+| 同上 | `com.apple.coredevice.action.clearsimulatedlocation` | 空字典 |
+
+设点的 `Input` 是 `SimulatedLocation`，没有速度、航向、精度或海拔字段。
+`startlocationsimulation` 是独立的设备端轨迹动作，包含 `speed`、`pacing`、`waypoints`；
+当前引擎仍自行调度每个坐标。诊断快照的 `device.location_channel` 显示当前发送通道。
+CoreDevice 首次写入前在脏标记中记录该通道；超时或传输中断等不明确结果会保留这个记录，
+之后需确认 CoreDevice 与 DVT 的清除才能移除标记。
+
+在 `LOCKED_START`，引擎从保存的环线依行进方向找第一段约 50 米的合格直道。固定直线中间约 44 米
+以 2.0 m/s 移动，两端留约 3 米制动和反向加速。热身共用 0.8 秒节拍与发送背压，
+不累计正式里程、用时或轨迹历史。按下开始时，正向直接接入环线，反向最多制动约 3 秒再接入；
+从当前取样点平滑合流到中线，首次通过原锚点的不足一圈不计为完整圈。没有合格直道时保留静止起点。
 
 `SAFE_STOPPED` 保留末端模拟位置供前端结算。
 单独恢复真实 GPS 可在停止运动后调用 `bridge.clear_location()`，返回是否确认清除成功。

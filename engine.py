@@ -678,6 +678,96 @@ class _Route:
         return _nearest_checked(self.points, point)
 
 
+class _WarmupGlide:
+    """A straight chord along the saved lap, with a stop at each reversal."""
+
+    SPEED = 2.0
+    TURN_SECONDS = 3.0
+    TURN_DISTANCE = SPEED*TURN_SECONDS/2
+    SPAN_M = 50.0
+    MERGE_M = 12.0
+
+    def __init__(self, origin, bearing, start_s, end_s, length):
+        self.origin, self.bearing, self.length = origin, bearing, length
+        self.start_s, self.end_s = start_s, end_s
+        self.leg_seconds = (length-2*self.TURN_DISTANCE)/self.SPEED
+        self.elapsed = 0.0
+        self.distance = self.TURN_DISTANCE
+        self.velocity = self.SPEED
+        self.start_pending = False
+
+    @classmethod
+    def find(cls, lap: _Route, width_m: float) -> Optional["_WarmupGlide"]:
+        if lap.length < cls.SPAN_M+cls.MERGE_M:
+            return None
+        # Search in route order. Precompute metre samples so even a large
+        # curved route has bounded search cost. Wrap only the search samples.
+        count = math.ceil(lap.length)
+        stride = lap.length/count
+        span = math.ceil(cls.SPAN_M/stride)
+        frame = _Projection(lap.points[0])
+        points = [_point(lap.sample(i*stride)) for i in range(count)]
+        xy = [frame.xy(p) for p in points]
+        tolerance = min(0.35, width_m/5)
+        for i in range(0, count, 2):
+            _geometry_check()
+            x, y = xy[i]
+            j = (i+span) % count
+            dx, dy = xy[j][0]-x, xy[j][1]-y
+            length = math.hypot(dx, dy)
+            if length < cls.SPAN_M-0.1:
+                continue
+            for k in range(1, span):
+                px, py = xy[(i+k) % count]
+                if (abs(dx*(py-y)-dy*(px-x)) > tolerance*length
+                        or not 0 < dx*(px-x)+dy*(py-y) < length*length):
+                    break
+            else:
+                a, b = points[i], points[j]
+                bearing = calculate_bearing(*a, *b)
+                if any(abs(_angle_delta(bearing, lap.sample(k*stride % lap.length)["bearing"])) > 5
+                       for k in (i, i+span)):
+                    continue
+                return cls(a, bearing, i*stride, (i+span)*stride, haversine_distance(*a, *b))
+        return None
+
+    def sample(self, lap: _Route) -> dict[str, float]:
+        s = (self.start_s+(self.end_s-self.start_s)*self.distance/self.length) % lap.length
+        lat, lon = _destination(self.origin, self.bearing, self.distance)
+        return {"lat": lat, "lon": lon, "bearing": (self.bearing+(180 if self.velocity < 0 else 0)) % 360,
+                "curvature": 0.0, "s_m": s}
+
+    def advance(self, dt: float) -> None:
+        if self.start_pending:
+            # Brake towards the forward direction within the same stopping
+            # distance as a normal reversal, wherever Start was pressed.
+            deceleration = self.SPEED/self.TURN_SECONDS
+            duration = min(dt, -self.velocity/deceleration)
+            self.distance = max(0.0, self.distance+(self.velocity+deceleration*duration/2)*duration)
+            self.velocity = min(0.0, self.velocity+deceleration*duration)
+            return
+        turn = 2*self.TURN_SECONDS
+        half = self.leg_seconds+turn
+        self.elapsed = (self.elapsed+dt) % (2*half)
+        phase = self.elapsed % half
+        if phase <= self.leg_seconds:
+            self.distance, self.velocity = self.TURN_DISTANCE+self.SPEED*phase, self.SPEED
+        else:
+            t = phase-self.leg_seconds
+            self.distance = self.length-self.TURN_DISTANCE+self.SPEED*t*(1-t/turn)
+            self.velocity = self.SPEED*(1-2*t/turn)
+        if self.elapsed >= half:
+            self.distance = self.length-self.distance
+            self.velocity = -self.velocity
+
+    @property
+    def straight_remaining_s(self) -> float:
+        if self.start_pending:
+            return 0.0
+        phase = self.elapsed % (self.leg_seconds+2*self.TURN_SECONDS)
+        return max(0.0, self.leg_seconds-phase)
+
+
 class _TrackCorridor:
     """Metric strip around the saved centreline, plus its excluded infield.
 
@@ -865,6 +955,11 @@ class BiomechanicalRunner(threading.Thread):
         self._lateral_scale = 1.0
         self._lap = None
         self._loop_s = 0.0
+        self._glide = None
+        self._glide_merge = None
+        self._glide_cruise = False
+        self._glide_connection_attempt = None
+        self._partial_first_lap = False
         self._detour = None
         self._detour_s = 0.0
         self._detour_targets = deque()
@@ -970,6 +1065,12 @@ class BiomechanicalRunner(threading.Thread):
             raise ValueError("track perimeter must be at least 10 m")
         corridor = _TrackCorridor(center, track_width_m)
         initial_lap = self._make_lap(perturb=False, center=center, anchors=anchors)
+        # Optional warmup must never make an otherwise usable route unusable.
+        try:
+            with _geometry_window(LIVE_GEOMETRY_SECONDS):
+                glide = _WarmupGlide.find(initial_lap, track_width_m)
+        except GeometryBudgetError:
+            glide = None
         with self._lock:
             self._require_open()
             if self.state in (RunnerState.CRUISING_LOOP, RunnerState.CRUISING_DETOUR):
@@ -985,6 +1086,11 @@ class BiomechanicalRunner(threading.Thread):
             self._lane_resume_m = 0.0
             self._prepared_lap = None
             self._lap = initial_lap
+            self._glide = glide
+            self._glide_merge = None
+            self._glide_cruise = False
+            self._glide_connection_attempt = None
+            self._partial_first_lap = False
             self.profile = profile
             self.base_speed_mps = self._rng.uniform(*( (2.75, 2.95) if profile == "standard" else (3.10, 3.30) ))
             self.requested_target_m = target_km*1000
@@ -1105,9 +1211,18 @@ class BiomechanicalRunner(threading.Thread):
             if self.state != RunnerState.IDLE or self.position is None:
                 raise RuntimeError("load a track in IDLE before locking the start")
             self._set_state(RunnerState.LOCKED_START)
-            self._record_trace()
+            if self._glide is not None:
+                self.position = self._glide.sample(self._lap)
+                self.speed_mps = self._glide.SPEED
+                self._active_since = time.monotonic()
+                device = self.bridge.snapshot()
+                if device["device_ready"] and not self.bridge.force_sandbox:
+                    self._glide_connection_attempt = device["reconnect_attempts"]
+                self._event("warmup_glide_started", straight_m=self._glide.length)
+            else:
+                self._record_trace()
             self.start_sequence = self.bridge.set_location(self.position["lat"], self.position["lon"])
-            self.bridge.set_stationary(True)
+            self.bridge.set_stationary(self._glide is None)
             if background and not self.is_alive():
                 super().start()
             return self.snapshot()
@@ -1117,13 +1232,37 @@ class BiomechanicalRunner(threading.Thread):
             self._require_open()
             if self.state != RunnerState.LOCKED_START:
                 raise RuntimeError("lock_start() is required before cruising")
-            self.bridge.set_stationary(False)
-            self._active_since = time.monotonic()
-            self._control_deadline = self._control_clock()+1.5
-            self._set_state(RunnerState.CRUISING_LOOP)
+            if self._glide is not None and self._glide.velocity < -EPS_M:
+                self._glide.start_pending = True
+            else:
+                self._begin_cruise()
             if background and not self.is_alive():
                 super().start()
             return self.snapshot()
+
+    def _begin_cruise(self) -> None:
+        self.bridge.set_stationary(False)
+        self._active_since = time.monotonic()
+        self._control_deadline = self._control_clock()+1.5
+        if self._glide is not None:
+            self._loop_s = self.position["s_m"]
+            self._partial_first_lap = self._loop_s > EPS_M
+            frame = _Projection(_point(self._lap.sample(self._loop_s)))
+            self._glide_merge = (frame, frame.xy(_point(self.position)))
+            self._glide_cruise = True
+            self.speed_mps = max(0.0, self._glide.velocity)
+            self._glide = None
+            self._record_trace()
+        self._set_state(RunnerState.CRUISING_LOOP)
+
+    def _tick_glide(self, dt: float) -> None:
+        self._glide.advance(dt)
+        self.position = self._glide.sample(self._lap)
+        self.speed_mps = abs(self._glide.velocity)
+        self.bridge.set_location(self.position["lat"], self.position["lon"])
+        if self._glide.start_pending and self._glide.velocity >= -EPS_M:
+            self._begin_cruise()
+        self._event("position", **self.snapshot())
 
     def submit_detour(self, detour_points: Iterable[Any]) -> dict[str, int]:
         draft = []
@@ -1265,7 +1404,8 @@ class BiomechanicalRunner(threading.Thread):
         return 0.93+0.04*(1-math.exp(-(distance_m-1800)/600))
 
     def _speed(self, dt: float) -> float:
-        warm = 1.5+(self.base_speed_mps-1.5)*min(1, self.elapsed_s/12)
+        initial = _WarmupGlide.SPEED if self._glide_cruise else 1.5
+        warm = initial+(self.base_speed_mps-initial)*min(1, self.elapsed_s/12)
         fatigue = self.fatigue_factor(self.distance_m)
         curve = 0.92 if self.position["curvature"] >= self.CURVE_THRESHOLD else 1.0
         alpha = 1-math.exp(-dt/3.0)
@@ -1376,6 +1516,7 @@ class BiomechanicalRunner(threading.Thread):
         self._pause_phase = "running"
         self._pause_speed = 0.0
         self.speed_mps = self.stride_m = 0.0
+        self._glide = None
         self._stop_pending = False
         self._pending_detour = None
         self._exit_remaining = None
@@ -1407,12 +1548,15 @@ class BiomechanicalRunner(threading.Thread):
         distance = crossing_distance-self._lap_start_distance
         if duration <= 0 or distance <= 0:
             raise ArithmeticError("lap statistics must describe forward motion")
-        self.lap_splits.append(duration)
-        self._lap_distances.append(distance)
-        del self.lap_splits[:-self.LAP_HISTORY_LIMIT]
-        del self._lap_distances[:-self.LAP_HISTORY_LIMIT]
-        self.laps += 1
-        self.current_lap = self.laps+1
+        partial = self._partial_first_lap
+        self._partial_first_lap = False
+        if not partial:
+            self.lap_splits.append(duration)
+            self._lap_distances.append(distance)
+            del self.lap_splits[:-self.LAP_HISTORY_LIMIT]
+            del self._lap_distances[:-self.LAP_HISTORY_LIMIT]
+            self.laps += 1
+            self.current_lap = self.laps+1
         previous_length = self._lap.length
         previous_endpoint = self._lap.points[-1]
         self._lap = next_lap
@@ -1422,8 +1566,9 @@ class BiomechanicalRunner(threading.Thread):
         self._loop_s = 0.0
         self._lap_start_time, self._lap_start_distance = crossing_time, crossing_distance
         self.lap_pace_factor = self._draw_lap_factor(crossing_distance, previous_length)
-        self._event("lap", laps=self.laps, current_lap=self.current_lap, lap_time_s=duration,
-                    lap_distance_m=distance, offset_m=self.offset_m, pace_factor=self.lap_pace_factor)
+        if not partial:
+            self._event("lap", laps=self.laps, current_lap=self.current_lap, lap_time_s=duration,
+                        lap_distance_m=distance, offset_m=self.offset_m, pace_factor=self.lap_pace_factor)
         if self._pending_detour is not None:
             # Perturbation changes both node count and the closest exit/entry.
             draft = self._pending_detour["draft"]
@@ -1456,6 +1601,12 @@ class BiomechanicalRunner(threading.Thread):
         limit = physical_m*0.75
         offset = max(self.offset_m-limit, min(self.offset_m+limit, offset))
         node["lat"], node["lon"] = _destination(_point(node), node["bearing"]+90, offset)
+        if self._glide_merge is not None:
+            frame, (dx, dy) = self._glide_merge
+            weight = 1-_smootherstep((self._lateral.distance_m+physical_m)/_WarmupGlide.MERGE_M)
+            if weight:
+                x, y = frame.xy(_point(node))
+                node["lat"], node["lon"] = frame.ll((x+dx*weight, y+dy*weight))
         return node, offset
 
     def _move_loop(self, budget: float, speed: float) -> tuple[float, float, dict, float]:
@@ -1544,6 +1695,8 @@ class BiomechanicalRunner(threading.Thread):
                 self.position = node
                 for transition in self._lateral.advance(move, move/speed):
                     self._event(transition, loop_distance_m=self._lateral.distance_m)
+                if self._glide_merge is not None and self._lateral.distance_m >= _WarmupGlide.MERGE_M:
+                    self._glide_merge = None
                 if self._loop_s >= self._lap.length-EPS_M:
                     self._next_lap(self.elapsed_s+(travelled+move)/speed, self.distance_m+travelled+move)
             else:
@@ -1594,13 +1747,16 @@ class BiomechanicalRunner(threading.Thread):
             dt = min(dt, MAX_MOTION_STEP_S)
         self._prepare_next_lap(dt)
         with self._lock:
-            if self.state in (RunnerState.IDLE, RunnerState.LOCKED_START, RunnerState.SAFE_STOPPED):
+            if self.state in (RunnerState.IDLE, RunnerState.SAFE_STOPPED):
+                return
+            if self.state == RunnerState.LOCKED_START and self._glide is None:
                 return
             on_loop = self.state == RunnerState.CRUISING_LOOP and self._pending_detour is None
             if self._stop_pending and on_loop and self._stop_reason != "target":
                 self._finish_stop()
                 return
-            if self.bridge.snapshot()["speed_fuse_tripped"]:
+            device = self.bridge.snapshot()
+            if device["speed_fuse_tripped"]:
                 # Preserve position, effective time, mileage and model state
                 # until the bridge's explicit restoration releases the latch.
                 return
@@ -1608,6 +1764,15 @@ class BiomechanicalRunner(threading.Thread):
                 # No speculative motion while the preceding point is pending
                 # (including checkpoints, reconnects and synchronous timeouts).
                 # Do not advance mileage, phase timers, trace or RNG state.
+                return
+            if self.state == RunnerState.LOCKED_START:
+                if self._glide_connection_attempt is not None and (not device["device_ready"]
+                        or device["reconnect_attempts"] != self._glide_connection_attempt):
+                    # Mirror the desktop's interrupted start gate. An earlier
+                    # Start click must not take effect after a USB reconnect.
+                    self._glide.start_pending = False
+                    return
+                self._tick_glide(dt)
                 return
             if on_loop and not self._target_walking and self.target_m-self.distance_m <= 12.0:
                 self._begin_target_walk()
@@ -1636,7 +1801,7 @@ class BiomechanicalRunner(threading.Thread):
             # recovery starts from that actual speed, never the discarded budget.
             # The first moving sample establishes the initial cruise baseline;
             # the separate locked-start and terminal states may have speed 0.
-            previous = self.speed_mps if self.elapsed_s > 0 else requested_speed
+            previous = self.speed_mps if self.elapsed_s > 0 or self._glide_cruise else requested_speed
             speed = max(previous-0.55*dt, min(previous+0.55*dt, requested_speed))
             if not self.bridge.force_sandbox and self.elapsed_s == 0:
                 # Leave room for the last stationary offset in the first wire step.
@@ -1759,6 +1924,10 @@ class BiomechanicalRunner(threading.Thread):
             return {"state": self.state.value, "position": dict(self.position) if self.position else None,
                     "distance_m": self.distance_m, "elapsed_s": self.elapsed_s, "speed_mps": self.speed_mps,
                     "stride_m": self.stride_m, "base_speed_mps": self.base_speed_mps, "profile": self.profile,
+                    "warmup_glide": self.state == RunnerState.LOCKED_START and self._glide is not None,
+                    "warmup_start_pending": self._glide is not None and self._glide.start_pending,
+                    "warmup_window_s": (self._glide.straight_remaining_s
+                                        if self.state == RunnerState.LOCKED_START and self._glide is not None else 0.0),
                     "requested_target_m": self.requested_target_m, "target_m": self.target_m,
                     "laps": self.laps, "current_lap": self.current_lap, "lap_splits": list(self.lap_splits),
                     "lap_splits_start": max(0, self.laps-len(self.lap_splits)),
@@ -1877,7 +2046,8 @@ class DirtySessionMarker:
             record = json.loads(self.path.read_text(encoding="utf-8"))
             if (not isinstance(record, dict) or record.get("active") is not True
                     or not isinstance(record.get("udid"), str) or not 1 <= len(record["udid"]) <= 128
-                    or not isinstance(record.get("session_id"), str) or not record["session_id"]):
+                    or not isinstance(record.get("session_id"), str) or not record["session_id"]
+                    or not isinstance(record.get("core_device", False), bool)):
                 raise ValueError("invalid location-session marker")
             self.record = record
         except FileNotFoundError:
@@ -1895,6 +2065,11 @@ class DirtySessionMarker:
     def udid(self) -> Optional[str]:
         with self._lock:
             return self.record["udid"] if self.record is not None else None
+
+    @property
+    def core_device(self) -> bool:
+        with self._lock:
+            return bool(self.record and self.record.get("core_device"))
 
     def _write(self, record: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1921,6 +2096,19 @@ class DirtySessionMarker:
                 raise ValueError("a device UDID is required before location injection")
             record = {"version": 1, "active": True, "udid": udid,
                       "session_id": uuid.uuid4().hex, "started_at": time.time()}
+            self._write(record)
+            self.record = record
+
+    def set_core_device(self, enabled: bool) -> None:
+        with self._lock, ProcessFileLock(self.path.with_suffix(".json.lock")):
+            self._assert_current()
+            if self.record is None:
+                raise RuntimeError("location-session marker must exist before a CoreDevice set")
+            record = dict(self.record)
+            if enabled:
+                record["core_device"] = True
+            else:
+                record.pop("core_device", None)
             self._write(record)
             self.record = record
 
@@ -1963,6 +2151,26 @@ class DirtySessionMarker:
                           "last_clear_attempt_at": time.time(), "last_clear_error": reason[:512]}
                 self._write(record)
                 self.record = record
+
+
+class _CoreDeviceLocation:
+    SERVICE = "com.apple.coredevice.locationservice"
+    FEATURE = "com.apple.coredevice.feature.simulatelocation"
+    SET = "com.apple.coredevice.action.setsimulatedlocation"
+    CLEAR = "com.apple.coredevice.action.clearsimulatedlocation"
+    MODULE = "pymobiledevice3.remote.core_device.core_device_service"
+
+    def __init__(self, service: Any, rejection: type):
+        self.service = service
+        self.rejection = rejection
+
+    async def set(self, lat: float, lon: float) -> None:
+        # CoreDeviceUtilities 651.13.5: Input is Codable SimulatedLocation,
+        # with only two Doubles. speed belongs to startlocationsimulation.
+        await self.service.invoke(self.FEATURE, {"latitude": lat, "longitude": lon}, action_identifier=self.SET)
+
+    async def clear(self) -> None:
+        await self.service.invoke(self.FEATURE, {}, action_identifier=self.CLEAR)
 
 
 class IOSDeviceBridge:
@@ -2050,6 +2258,10 @@ class IOSDeviceBridge:
         self._stack = None
         self._simulator = None
         self._provider = None
+        self._core_location = None
+        self._core_stack = None
+        self._core_fallback = False
+        self._core_needs_clear = bool(dirty_marker is not None and dirty_marker.core_device)
         self._latest = None
         self._stationary = False
         self._sequence = 0
@@ -2194,6 +2406,8 @@ class IOSDeviceBridge:
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {"mode": self.mode.value, "reason": self.reason, "last_error": self.last_error,
+                    "location_channel": ("coredevice" if self._core_location is not None and not self._core_fallback
+                                         else "dvt" if self._simulator is not None else None),
                     "device_ready": (self.mode == BridgeMode.CONNECTED and not (
                         self._fuse_tripped or self._clear_requested or self._recovery_required or self._closing)),
                     "connection_stage": self.connection_stage,
@@ -2532,6 +2746,52 @@ class IOSDeviceBridge:
             async with mounter.PersonalizedImageMounter(provider) as image:
                 await image.mount(files["Image.dmg"], files["BuildManifest.plist"], files["Image.dmg.trustcache"])
 
+    async def _open_core_location(self, provider: Any) -> Optional[_CoreDeviceLocation]:
+        core = _CoreDeviceLocation
+        stack = AsyncExitStack()
+        adapter = None
+        try:
+            features = provider.get_service_features(core.SERVICE)
+            LOGGER.info("CoreDevice probe: iOS %s, service=%s, advertised features=%s",
+                        self.ios_version, core.SERVICE, ", ".join(sorted(features)) or "(none advertised)")
+            if features and core.FEATURE not in features:
+                LOGGER.info("CoreDevice feature %s not advertised; selecting DVT", core.FEATURE)
+                return None
+            try:
+                module = importlib.import_module(core.MODULE)
+            except ImportError:
+                module = importlib.import_module("pymobiledevice3.services.remote.core_device.core_device_service")
+            resource = await asyncio.wait_for(
+                self._enter_resource(stack, module.CoreDeviceService(provider, core.SERVICE)),
+                timeout=min(self.connect_timeout, MOTION_INTERVAL_S))
+            adapter = core(resource, module.CoreDeviceError)
+            self._core_stack = stack
+            LOGGER.info("CoreDevice location ready; set=%s clear=%s, input=latitude/longitude", core.SET, core.CLEAR)
+            return adapter
+        except Exception as exc:
+            LOGGER.info("CoreDevice location unavailable; selecting DVT: %s",
+                        _diagnostic_text(f"{type(exc).__name__}: {exc}"))
+            return None
+        finally:
+            if adapter is None:
+                await self._close_core_stack(stack)
+
+    @staticmethod
+    async def _close_core_stack(stack: AsyncExitStack) -> None:
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stack.aclose(), timeout=MOTION_INTERVAL_S/4)
+
+    async def _close_core_location(self) -> None:
+        stack = self._core_stack
+        self._core_location = self._core_stack = None
+        if stack is not None:
+            await self._close_core_stack(stack)
+
+    def _set_core_needs_clear(self, enabled: bool) -> None:
+        if self._dirty_marker is not None and not self.force_sandbox:
+            self._dirty_marker.set_core_device(enabled)
+        self._core_needs_clear = enabled
+
     async def _open_session(self) -> None:
         stack = AsyncExitStack()
         try:
@@ -2573,6 +2833,8 @@ class IOSDeviceBridge:
                         already_mounted = getattr(exceptions, "AlreadyMountedError", ())
                     if not isinstance(exc, already_mounted):
                         raise
+            if not self._core_fallback or self._core_needs_clear:
+                self._core_location = await self._open_core_location(provider)
             with self._connection_stage("dvt", "DVT handshake", self.connect_timeout):
                 try:
                     dvt_class = importlib.import_module("pymobiledevice3.services.dvt.instruments.dvt_provider").DvtProvider
@@ -2590,6 +2852,7 @@ class IOSDeviceBridge:
             if not self._device_is_pinned():
                 with self._lock:
                     self.udid = self.ios_version = None
+            await self._close_core_location()
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(stack.aclose(), timeout=2.0)
             raise
@@ -2640,6 +2903,13 @@ class IOSDeviceBridge:
                 await asyncio.wait_for(_invoke(simulator.clear, _sync_calls=self._pending_sync_calls,
                                               _executor=self._driver_executor),
                                        timeout=self.send_timeout)
+                if self._core_needs_clear:
+                    if self._core_location is None:
+                        self._core_location = await self._open_core_location(self._provider)
+                    if self._core_location is None:
+                        raise RuntimeError("CoreDevice clear could not reach the location service")
+                    await asyncio.wait_for(self._core_location.clear(), timeout=self.send_timeout)
+                    self._core_needs_clear = False
                 if self._dirty_marker is not None:
                     self._dirty_marker.cleared()
                 self._location_dirty = self._recovery_required = False
@@ -2652,6 +2922,7 @@ class IOSDeviceBridge:
         if any(not work.done() for work in tuple(self._pending_sync_calls)):
             return False
         self._simulator = self._stack = self._provider = None
+        await self._close_core_location()
         if stack is not None:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(stack.aclose(), timeout=2.0)
@@ -2701,6 +2972,7 @@ class IOSDeviceBridge:
                 self._fuse_tripped = False
                 self._last_send_at = self._last_send_position = None
                 self._last_send_completed_at = None
+                self._core_fallback = False
             self.reason = "location simulation released" if cleared else "location reset unconfirmed"
             self._clear_ack.set()
             if future is not None and not future.done():
@@ -2841,12 +3113,18 @@ class IOSDeviceBridge:
                         self._dirty_marker.mark(self.udid)
                     self._location_dirty = True
                     self._last_clear_succeeded = False
-            try:
-                await asyncio.wait_for(_invoke(self._simulator.set, *position,
-                                               _sync_calls=self._pending_sync_calls,
-                                               _executor=self._driver_executor), timeout=self.send_timeout)
-            except asyncio.TimeoutError as exc:
-                raise asyncio.TimeoutError(f"DVT location send timed out after {self.send_timeout:g}s") from exc
+            if not await self._try_core_send(position):
+                if self._closed or self._closing or self._clear_requested:
+                    return
+                # If CoreDevice timed out, this is when the fallback actually
+                # starts. The next sample still waits a full wire interval.
+                sent_at = self._wire_clock()
+                try:
+                    await asyncio.wait_for(_invoke(self._simulator.set, *position,
+                                                   _sync_calls=self._pending_sync_calls,
+                                                   _executor=self._driver_executor), timeout=self.send_timeout)
+                except asyncio.TimeoutError as exc:
+                    raise asyncio.TimeoutError(f"DVT location send timed out after {self.send_timeout:g}s") from exc
             with self._lock:
                 self._last_send_at = sent_at
                 self._last_send_completed_at = self._wire_clock()
@@ -2855,6 +3133,30 @@ class IOSDeviceBridge:
                 self._prune_delivered()
                 self.physical_sent += 1
                 self.last_delivered_position = {"lat": position[0], "lon": position[1]}
+
+    async def _try_core_send(self, position: tuple[float, float]) -> bool:
+        core = self._core_location
+        if self._core_fallback or core is None:
+            return False
+        already_dirty = self._core_needs_clear
+        if not already_dirty:
+            self._set_core_needs_clear(True)
+        try:
+            await asyncio.wait_for(core.set(*position), timeout=min(self.send_timeout, MOTION_INTERVAL_S/2))
+            return True
+        except Exception as exc:
+            # A first explicit device rejection means no CoreDevice point was
+            # accepted. A lost reply is ambiguous, so preserve recovery intent.
+            if not already_dirty and isinstance(exc, core.rejection):
+                self._set_core_needs_clear(False)
+            self._core_fallback = True
+            with self._lock:
+                if self.mode == BridgeMode.CONNECTED:
+                    self.reason = "CoreDevice set failed; DVT location simulation active"
+            LOGGER.warning("CoreDevice set failed; retrying the same sample via DVT: %s",
+                           _diagnostic_text(f"{type(exc).__name__}: {exc}"), extra={"fault": True})
+            await self._close_core_location()
+            return False
 
     def _check_dvt_connection(self) -> None:
         task = self._dvt_disconnect_task
@@ -2930,7 +3232,9 @@ class IOSDeviceBridge:
                         with self._lock:
                             self.mode = BridgeMode.CONNECTED
                             self.connection_stage = "ready"
-                            self.reason = "RSD + DVT location simulation ready"
+                            self.reason = ("RSD + CoreDevice location simulation ready (DVT standby)"
+                                           if self._core_location is not None and not self._core_fallback
+                                           else "RSD + DVT location simulation ready")
                             self.last_error = None
                             self._device_error_code = None
                             self._ever_connected = True

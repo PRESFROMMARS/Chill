@@ -506,6 +506,97 @@ class RunnerTests(EngineCase):
         self.assertEqual(runner.targets_visited, [1, 2])
 
 
+class WarmupGlideTests(EngineCase):
+    def glide_runner(self):
+        bridge = e.IOSDeviceBridge(sandbox=True)
+        runner = e.BiomechanicalRunner(bridge, rng=random.Random(41))
+        self.addCleanup(bridge.close)
+        self.addCleanup(runner.close)
+        anchors = e.TrackGeometry.stadium_anchors(ORIGIN, 92, 34, 75)
+        runner.load_track(anchors)
+        state = runner.lock_start(background=False)
+        self.assertTrue(state["warmup_glide"])
+        self.assertFalse(bridge._stationary)
+        return runner
+
+    def test_locked_samples_are_collinear_and_constant_speed_without_run_credit(self):
+        runner = self.glide_runner()
+        samples = [runner.snapshot()["position"]]+[runner.step()["position"] for _ in range(25)]
+        bearing = samples[0]["bearing"]
+        start = e._point(samples[0])
+        for index, item in enumerate(samples):
+            expected = e._destination(start, bearing, index*1.6)
+            self.assertLess(e.haversine_distance(*expected, *e._point(item)), .001)
+            self.assertEqual(item["bearing"], bearing)
+        self.assertAlmostEqual(e.haversine_distance(*start, *e._point(samples[-1])), 40, places=4)
+        for i in range(len(samples)-12):
+            # Device-time span of 12 intervals at 1.25 Hz is 9.6 seconds.
+            self.assertAlmostEqual(e.haversine_distance(*e._point(samples[i]), *e._point(samples[i+12])), 19.2, places=4)
+        self.assertEqual((runner.elapsed_s, runner.distance_m, runner.laps), (0, 0, 0))
+        self.assertEqual(runner.trace_since()["points"], [])
+
+    def test_forward_start_resumes_from_live_point_and_first_partial_lap_is_not_counted(self):
+        runner = self.glide_runner()
+        for _ in range(12):
+            state = runner.step()
+        self.assertGreater(state["warmup_window_s"], 10)
+        before = e._point(runner.position)
+        state = runner.start_cruising(background=False)
+        self.assertEqual(state["state"], "CRUISING_LOOP")
+        self.assertEqual(e._point(state["position"]), before)
+        self.assertEqual(state["speed_mps"], 2.0)
+        self.assertEqual(e._point(runner.trace_since()["points"][0]), before)
+        after = runner.step()
+        self.assertLessEqual(e.haversine_distance(*before, *e._point(after["position"])), 2)
+        self.assertLessEqual(abs(after["speed_mps"]-2), .55*.8+1e-5)
+        for _ in range(500):
+            if runner.step()["position"]["s_m"] < state["position"]["s_m"]:
+                break
+        else:
+            self.fail("did not reach the track seam")
+        self.assertEqual(runner.laps, 0)
+        for _ in range(500):
+            if runner.step()["laps"]:
+                break
+        self.assertEqual(runner.laps, 1)
+        self.assertGreater(runner.snapshot()["last_lap"]["distance_m"], 350)
+
+    def test_turnaround_stays_on_line_and_reverse_start_brakes_without_a_jump(self):
+        runner = self.glide_runner()
+        origin = e._point(runner.position)
+        forward = runner.position["bearing"]
+        for _ in range(38):
+            before = e._point(runner.position)
+            state = runner.step()
+            self.assertLess(e.haversine_distance(*before, *e._point(state["position"])), 1.601)
+        self.assertAlmostEqual(abs(e._angle_delta(forward, runner.position["bearing"])), 180)
+        self.assertGreater(e.haversine_distance(*origin, *e._point(runner.position)), 25)
+        self.assertTrue(runner.start_cruising(background=False)["warmup_start_pending"])
+        for _ in range(4):
+            before = e._point(runner.position)
+            state = runner.step()
+            self.assertLess(e.haversine_distance(*before, *e._point(state["position"])), 1.601)
+        self.assertEqual(state["state"], "CRUISING_LOOP")
+        self.assertEqual(state["distance_m"], 0)
+        self.assertEqual(state["speed_mps"], 0)
+        self.assertAlmostEqual(runner.step()["speed_mps"], .55*.8, places=4)
+        runner.request_safe_stop()
+        self.assertEqual(runner.step()["state"], "SAFE_STOPPED")
+        self.assertTrue(runner.bridge._stationary)
+
+    def test_curved_track_can_still_lock_and_start(self):
+        bridge = e.IOSDeviceBridge(sandbox=True)
+        runner = e.BiomechanicalRunner(bridge)
+        self.addCleanup(bridge.close)
+        self.addCleanup(runner.close)
+        runner.load_track(circle(radius=30))
+        locked = runner.lock_start(background=False)
+        self.assertFalse(locked["warmup_glide"])
+        self.assertEqual(runner.step()["position"], locked["position"])
+        self.assertTrue(bridge._stationary)
+        self.assertEqual(runner.start_cruising(background=False)["state"], "CRUISING_LOOP")
+
+
 class MultiLapTests(EngineCase):
     def test_one_to_eight_metre_corridors_contain_start_and_eight_laps(self):
         for width in (1.0, 2.0, 8.0):
@@ -727,6 +818,95 @@ class MultiLapTests(EngineCase):
 
 
 class BridgeTests(EngineCase):
+    def test_coredevice_probe_and_wire_contract_take_precedence(self):
+        class CoreRejection(Exception):
+            pass
+
+        async def exercise():
+            bridge = e.IOSDeviceBridge(sandbox=True)
+            self.addCleanup(bridge.close)
+            service = SimpleNamespace(invoke=AsyncMock(), close=AsyncMock())
+            open_service = MagicMock(return_value=service)
+            core = e._CoreDeviceLocation
+            provider = SimpleNamespace(get_service_features=MagicMock(return_value={core.FEATURE}))
+            with patch.object(e.importlib, "import_module", return_value=SimpleNamespace(
+                    CoreDeviceService=open_service, CoreDeviceError=CoreRejection)):
+                bridge._core_location = await bridge._open_core_location(provider)
+            provider.get_service_features.assert_called_once_with(core.SERVICE)
+            open_service.assert_called_once_with(provider, core.SERVICE)
+            dvt = bridge._simulator = SimpleNamespace(set=AsyncMock(), clear=AsyncMock())
+            await bridge._send((1, *ORIGIN))
+            service.invoke.assert_awaited_once_with(core.FEATURE,
+                {"latitude": ORIGIN[0], "longitude": ORIGIN[1]}, action_identifier=core.SET)
+            dvt.set.assert_not_awaited()
+            self.assertEqual(bridge.snapshot()["location_channel"], "coredevice")
+            self.assertTrue(await bridge._disconnect(clear=True))
+            service.invoke.assert_awaited_with(core.FEATURE, {}, action_identifier=core.CLEAR)
+            dvt.clear.assert_awaited_once()
+            service.close.assert_awaited_once()
+        asyncio.run(exercise())
+
+    def test_coredevice_unavailable_or_rejected_delivers_same_sample_via_dvt(self):
+        class CoreRejection(Exception):
+            pass
+
+        async def exercise(advertised):
+            bridge = e.IOSDeviceBridge(sandbox=True, clock=lambda: self.now)
+            self.addCleanup(bridge.close)
+            self.now = 0.0
+            core = e._CoreDeviceLocation
+            provider = SimpleNamespace(get_service_features=MagicMock(return_value=advertised))
+            service = SimpleNamespace(invoke=AsyncMock(side_effect=CoreRejection("unsupported action")))
+            open_service = MagicMock(return_value=service)
+            with patch.object(e.importlib, "import_module", return_value=SimpleNamespace(
+                    CoreDeviceService=open_service, CoreDeviceError=CoreRejection)):
+                bridge._core_location = await bridge._open_core_location(provider)
+            bridge._simulator = SimpleNamespace(set=AsyncMock(), clear=AsyncMock())
+            second = e._destination(ORIGIN, 90, 1.6)
+            await bridge._send((1, *ORIGIN))
+            self.now += .8
+            await bridge._send((2, *second))
+            self.assertEqual([item.args for item in bridge._simulator.set.await_args_list], [ORIGIN, second])
+            self.assertEqual(service.invoke.await_count, int(core.FEATURE in advertised))
+            self.assertEqual(bridge.snapshot()["location_channel"], "dvt")
+            self.assertEqual(bridge.snapshot()["delivered_sequence"], 2)
+            self.assertFalse(bridge._core_needs_clear)
+            self.assertTrue(await bridge._disconnect(clear=True))
+        for advertised in ({"com.apple.coredevice.feature.other"}, {e._CoreDeviceLocation.FEATURE}):
+            with self.subTest(advertised=advertised):
+                asyncio.run(exercise(advertised))
+
+    def test_ambiguous_core_timeout_falls_back_and_restoration_requires_core_clear(self):
+        class CoreRejection(Exception):
+            pass
+
+        async def timeout(*args, **kwargs):
+            await asyncio.sleep(5)
+
+        async def exercise(marker):
+            bridge = e.IOSDeviceBridge(udid="mock-core-timeout", send_timeout=.02, dirty_marker=marker)
+            self.addCleanup(bridge.close)
+            bridge._claim_device = MagicMock()
+            core = e._CoreDeviceLocation
+            service = SimpleNamespace(invoke=AsyncMock(side_effect=timeout))
+            bridge._core_location = core(service, CoreRejection)
+            dvt = bridge._simulator = SimpleNamespace(set=AsyncMock(), clear=AsyncMock())
+            await bridge._send((1, *ORIGIN))
+            dvt.set.assert_awaited_once_with(*ORIGIN)
+            self.assertTrue(e.DirtySessionMarker(marker.path).core_device)
+            bridge._open_core_location = AsyncMock(return_value=None)
+            self.assertFalse(await bridge._disconnect(clear=True))
+            self.assertTrue(marker.pending)
+            dvt.clear.assert_awaited_once()
+            retry = SimpleNamespace(invoke=AsyncMock())
+            bridge._simulator = dvt
+            bridge._open_core_location.return_value = core(retry, CoreRejection)
+            self.assertTrue(await bridge._disconnect(clear=True))
+            retry.invoke.assert_awaited_once_with(core.FEATURE, {}, action_identifier=core.CLEAR)
+            self.assertFalse(marker.pending)
+        with tempfile.TemporaryDirectory() as folder:
+            asyncio.run(exercise(e.DirtySessionMarker(Path(folder)/"session.json")))
+
     def test_usb_discovery_waits_for_service_preparation(self):
         preparing, prepared = threading.Event(), threading.Event()
 
