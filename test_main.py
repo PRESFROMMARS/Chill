@@ -118,6 +118,7 @@ class ConfigTests(APICase):
         self.assertEqual(result["error"]["code"], "config_save_failed")
         self.assertEqual(self.path.read_bytes(), before)
         self.assertEqual(self.api._config.read()["language"], "zh")
+        self.assertEqual(list(self.path.parent.glob(".piggy-*.tmp")), [])
 
     def test_corrupt_file_is_preserved_until_explicit_save(self):
         self.path.write_text("broken", encoding="utf-8")

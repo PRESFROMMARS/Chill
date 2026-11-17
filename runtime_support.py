@@ -1,6 +1,7 @@
-"""Bounded process, driver and diagnostic primitives; no work at import time."""
+"""Shared filesystem, process, driver and diagnostic primitives."""
 import ctypes
 import hashlib
+import json
 import logging
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import Future
+from typing import Optional
 
 
 _DEVICE_ID = re.compile(r"(?<![0-9a-f])(?:[0-9a-f]{8}-[0-9a-f]{16}|[0-9a-f]{40})(?![0-9a-f])", re.I)
@@ -18,6 +20,30 @@ _USER_PATH = re.compile(r"(?P<root>(?:[a-z]:)?[\\/]+Users[\\/]+)[^\\/\r\n\"'<>:]
 
 def redact_diagnostics(text: str) -> str:
     return _USER_PATH.sub(r"\g<root><REDACTED>", _DEVICE_ID.sub("<REDACTED>", text))
+
+
+def write_json_atomically(path: Path, data: dict, *, prefix: str,
+                          indent: Optional[int] = None, ensure_ascii: bool = True) -> None:
+    """Flush a temporary file before replacing the destination."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                         prefix=prefix, suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(data, stream, indent=indent, ensure_ascii=ensure_ascii, allow_nan=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if os.name != "nt":
+            os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                logging.getLogger(__name__).debug("temporary JSON cleanup failed", exc_info=True)
 
 
 class InstanceRunningError(RuntimeError):

@@ -108,8 +108,10 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(b.snapshot()['speed_fuse_tripped'])
         REPORT['stress']={'ticks':2500,'trigger_times_s':triggers,'walk_durations_s':walks,'accepted_manual_commands':accepted,'rejected_spam_commands':rejected,'outer_lane_min_m':min(outer_offsets),'outer_lane_max_m':max(outer_offsets),'inner_return_max_abs_m':max(inner_offsets),'min_speed_mps':min(v['speed_mps'] for v in rows),'max_speed_mps':max(v['speed_mps'] for v in rows),'max_acceleration_mps2':max(abs(c['speed_mps']-a['speed_mps'])/.95 for a,c in zip(rows,rows[1:])),'wire_calls_including_initial_lock':len(rec.calls),'min_wire_interval_s':min(gaps),'max_wire_interval_s':max(gaps)}
         REPORT['stress'].update(min_wire_speed_mps=min(wire_speeds),max_wire_speed_mps=max(wire_speeds),max_wire_acceleration_mps2=wire_acceleration)
-        for row,wire_speed in zip(rows,wire_speeds):row['wire_speed_mps']=wire_speed
-        (ROOT/'artifacts/chill-audit-motion.json').write_text(json.dumps(rows,indent=2)+'\n')
+        if __name__ == "__main__":
+            for row, wire_speed in zip(rows, wire_speeds):
+                row["wire_speed_mps"] = wire_speed
+            (ROOT/"artifacts/chill-audit-motion.json").write_text(json.dumps(rows, indent=2)+"\n")
 
     def test_02_bridge_fuse_rejects_teleport_and_stays_latched(self):
         clock,b,r,rec=self.make()

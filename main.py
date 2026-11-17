@@ -21,7 +21,6 @@ import secrets
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -29,7 +28,7 @@ from typing import Any, Optional
 import urllib.parse
 import urllib.request
 import ddi_support
-from runtime_support import BoundedFaultLog, InstanceRunningError, ParentWatchdog
+from runtime_support import BoundedFaultLog, InstanceRunningError, ParentWatchdog, write_json_atomically
 
 LOGGER = logging.getLogger("piggy")
 ACTIVE_STATES = {"LOCKED_START", "CRUISING_LOOP", "CRUISING_DETOUR"}
@@ -182,24 +181,9 @@ class ConfigStore:
     def update(self, changes: dict) -> dict:
         with self._lock:
             candidate = self._validate({**self._data, **changes})
-            temp_name = None
             try:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(self.path.parent),
-                                                 prefix=".piggy-", suffix=".tmp", delete=False) as file:
-                    temp_name = file.name
-                    json.dump(candidate, file, ensure_ascii=False, indent=2, allow_nan=False)
-                    file.flush()
-                    os.fsync(file.fileno())
-                if os.name != "nt":
-                    os.chmod(temp_name, 0o600)
-                os.replace(temp_name, self.path)
+                write_json_atomically(self.path, candidate, prefix=".piggy-", indent=2, ensure_ascii=False)
             except (OSError, ValueError):
-                if temp_name is not None:
-                    try:
-                        os.unlink(temp_name)
-                    except OSError:
-                        LOGGER.debug("temporary config cleanup failed", exc_info=True)
                 raise AppError("config_save_failed") from None
             self._data = candidate
             self.issue = None

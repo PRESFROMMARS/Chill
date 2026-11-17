@@ -39,7 +39,6 @@ import random
 import re
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import uuid
@@ -52,7 +51,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 import ddi_support
-from runtime_support import DaemonDriverExecutor, InstanceRunningError, ProcessFileLock, device_lock, redact_diagnostics
+from runtime_support import (DaemonDriverExecutor, InstanceRunningError, ProcessFileLock,
+                             device_lock, redact_diagnostics, write_json_atomically)
 
 __all__ = ["check_ntp_offset", "TimeSyncError", "wgs84_to_gcj02", "gcj02_to_wgs84",
            "haversine_distance", "calculate_bearing", "TrackGeometry", "RunnerState",
@@ -1918,16 +1918,16 @@ class BiomechanicalRunner(threading.Thread):
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
+            glide = self._glide if self.state == RunnerState.LOCKED_START else None
             last_lap = None if not self.lap_splits else {
                 "duration_s": self.lap_splits[-1], "distance_m": self._lap_distances[-1],
                 "pace_s_per_km": self.lap_splits[-1]*1000/self._lap_distances[-1]}
             return {"state": self.state.value, "position": dict(self.position) if self.position else None,
                     "distance_m": self.distance_m, "elapsed_s": self.elapsed_s, "speed_mps": self.speed_mps,
                     "stride_m": self.stride_m, "base_speed_mps": self.base_speed_mps, "profile": self.profile,
-                    "warmup_glide": self.state == RunnerState.LOCKED_START and self._glide is not None,
-                    "warmup_start_pending": self._glide is not None and self._glide.start_pending,
-                    "warmup_window_s": (self._glide.straight_remaining_s
-                                        if self.state == RunnerState.LOCKED_START and self._glide is not None else 0.0),
+                    "warmup_glide": glide is not None,
+                    "warmup_start_pending": glide.start_pending if glide is not None else False,
+                    "warmup_window_s": glide.straight_remaining_s if glide is not None else 0.0,
                     "requested_target_m": self.requested_target_m, "target_m": self.target_m,
                     "laps": self.laps, "current_lap": self.current_lap, "lap_splits": list(self.lap_splits),
                     "lap_splits_start": max(0, self.laps-len(self.lap_splits)),
@@ -2072,21 +2072,7 @@ class DirtySessionMarker:
             return bool(self.record and self.record.get("core_device"))
 
     def _write(self, record: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = None
-        try:
-            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(self.path.parent),
-                                             prefix=".piggy-location-", suffix=".tmp", delete=False) as stream:
-                temporary = stream.name
-                json.dump(record, stream, allow_nan=False)
-                stream.flush()
-                os.fsync(stream.fileno())
-            if os.name != "nt":
-                os.chmod(temporary, 0o600)
-            os.replace(temporary, self.path)
-        finally:
-            if temporary is not None and os.path.exists(temporary):
-                os.unlink(temporary)
+        write_json_atomically(self.path, record, prefix=".piggy-location-")
 
     def mark(self, udid: str) -> None:
         with self._lock, ProcessFileLock(self.path.with_suffix(".json.lock")):
@@ -2115,13 +2101,7 @@ class DirtySessionMarker:
     def cleared(self) -> None:
         with self._lock, ProcessFileLock(self.path.with_suffix(".json.lock")):
             self._assert_current()
-            if self.invalid:
-                raise RuntimeError("cannot clear an unidentified location session")
             if self.record is not None:
-                # Do not delete a newer session written by another app instance.
-                current = json.loads(self.path.read_text(encoding="utf-8"))
-                if current.get("session_id") != self.record["session_id"]:
-                    raise RuntimeError("location-session marker changed during recovery")
                 self.path.unlink()
                 self.record = None
 
